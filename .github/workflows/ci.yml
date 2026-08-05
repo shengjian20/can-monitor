@@ -1,0 +1,89 @@
+name: CI
+
+on: [push, pull_request]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  ci:
+    name: ci (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        include:
+          # 仅 Linux 跑全量测试 (test/clippy/fmt/purity), 需额外装 clippy + rustfmt 组件;
+          # Windows/macOS 只做 cargo check, 不装额外组件 (components 为空)
+          - os: ubuntu-latest
+            components: clippy, rustfmt
+
+    steps:
+      - uses: actions/checkout@v7
+
+      # Node.js: 为后续 Tauri GUI 工作区预留的固定版本 (Tauri 2.11.x 要求 Node 20/22 LTS)
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: ${{ matrix.components }}
+
+      # 缓存 cargo registry + target 目录
+      # workspaces: 同时列出根 workspace (`.`) 与预留的 src-tauri/
+      # 注意: src-tauri 目前不存在, rust-cache 对缺失 workspace 只打印错误并跳过, 不会 fail (已验证源码行为)
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            . -> target
+            ./src-tauri -> target
+
+      # Tauri v2 的 Linux 系统依赖 (备用): 当前纯 Rust workspace 构建不需要,
+      # 为后续 GUI 工作区 (Task 25 之后) 提前装好
+      - name: Install Linux system deps (Tauri fallback)
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev
+
+      # 全平台统一入口检查
+      - name: cargo check --workspace
+        run: cargo check --workspace
+
+      # ---------- Linux only: 全量质量门禁 ----------
+      - name: cargo test --workspace
+        if: matrix.os == 'ubuntu-latest'
+        run: cargo test --workspace
+
+      - name: cargo clippy (all targets, deny warnings)
+        if: matrix.os == 'ubuntu-latest'
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: cargo fmt --check
+        if: matrix.os == 'ubuntu-latest'
+        run: cargo fmt --check
+
+      - name: core purity check
+        if: matrix.os == 'ubuntu-latest'
+        run: bash scripts/check-core-purity.sh
+
+      # vcan 集成测试 (can-socketcan, feature 门控):
+      # GitHub runner 通常无内核模块权限 → modprobe 失败即跳过, 不 fail。
+      # continue-on-error + || true 双保险, 保证该步骤挂了也不影响 job 结论。
+      - name: vcan integration test (can-socketcan)
+        if: matrix.os == 'ubuntu-latest'
+        continue-on-error: true
+        run: |
+          if ! sudo modprobe vcan 2>/dev/null; then
+            echo "::warning::vcan kernel module unavailable on this runner - skipping vcan tests"
+            exit 0
+          fi
+          # 模块就绪: 建接口 (可失败, 后续测试自会跳过) 并跑 vcan 门控测试
+          sudo ip link add dev vcan0 type vcan 2>/dev/null || true
+          sudo ip link set vcan0 up 2>/dev/null || true
+          cargo test -p can-socketcan --features vcan-test
