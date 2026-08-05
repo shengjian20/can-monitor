@@ -2,5 +2,6 @@
 name = "can-usbvci"
 version = "0.1.0"
 edition = "2021"
+description = "ZLGCAN (周立功) USBCAN 系列 USB-CAN 适配器的 VCI FFI 绑定层"
 
 [dependencies]
