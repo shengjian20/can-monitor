@@ -1,0 +1,289 @@
+/* ── CAN Monitor 深色工程风 ──────────────────────────────────── */
+
+:root {
+  /* 色彩系统 */
+  --bg-primary: #0d1117;
+  --bg-secondary: #161b22;
+  --bg-tertiary: #21262d;
+  --border: #30363d;
+  --text-primary: #c9d1d9;
+  --text-secondary: #8b949e;
+  --text-muted: #484f58;
+  --accent: #58a6ff;
+  --accent-hover: #79c0ff;
+  --green: #3fb950;
+  --red: #f85149;
+  --yellow: #d29922;
+  --orange: #d18616;
+
+  /* 间距 */
+  --sp-1: 4px;
+  --sp-2: 8px;
+  --sp-3: 12px;
+  --sp-4: 16px;
+  --sp-6: 24px;
+  --sp-8: 32px;
+
+  /* 字体 */
+  --font-mono: "JetBrains Mono", "Fira Code", "Cascadia Code", "SF Mono",
+    "Menlo", "Consolas", monospace;
+  --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial,
+    sans-serif;
+
+  /* 圆角 */
+  --radius: 6px;
+}
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  font-family: var(--font-mono);
+  font-size: 13px;
+  color: var(--text-primary);
+  background: var(--bg-primary);
+}
+
+/* ── App 布局 ───────────────────────────────────────────────── */
+
+.app {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  overflow: hidden;
+}
+
+/* ── 顶栏 ───────────────────────────────────────────────────── */
+
+.app-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--sp-3) var(--sp-4);
+  background: var(--bg-secondary);
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.app-title {
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--accent);
+  letter-spacing: 0.5px;
+}
+
+.app-controls {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+}
+
+/* ── 设备选择 ───────────────────────────────────────────────── */
+
+.device-select {
+  padding: var(--sp-1) var(--sp-2);
+  font-family: var(--font-mono);
+  font-size: 13px;
+  color: var(--text-primary);
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  outline: none;
+  min-width: 200px;
+}
+
+.device-select:focus {
+  border-color: var(--accent);
+}
+
+/* ── 按钮 ───────────────────────────────────────────────────── */
+
+.btn {
+  padding: var(--sp-1) var(--sp-3);
+  font-family: var(--font-mono);
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-primary);
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s;
+}
+
+.btn:hover:not(:disabled) {
+  border-color: var(--text-secondary);
+}
+
+.btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.btn-start {
+  color: var(--green);
+  border-color: var(--green);
+}
+
+.btn-start:hover:not(:disabled) {
+  background: rgba(63, 185, 80, 0.1);
+  border-color: var(--green);
+}
+
+.btn-stop {
+  color: var(--red);
+  border-color: var(--red);
+}
+
+.btn-stop:hover:not(:disabled) {
+  background: rgba(248, 81, 73, 0.1);
+  border-color: var(--red);
+}
+
+/* ── 错误提示 ───────────────────────────────────────────────── */
+
+.app-error {
+  padding: var(--sp-2) var(--sp-4);
+  color: var(--red);
+  background: rgba(248, 81, 73, 0.1);
+  border-bottom: 1px solid rgba(248, 81, 73, 0.3);
+  font-size: 12px;
+}
+
+/* ── 主区 ───────────────────────────────────────────────────── */
+
+.app-main {
+  flex: 1;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+/* ── 帧表格 ─────────────────────────────────────────────────── */
+
+.frame-table-empty {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-muted);
+  font-size: 14px;
+}
+
+.frame-table-wrap {
+  flex: 1;
+  overflow-y: auto;
+  overflow-x: auto;
+}
+
+.frame-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+.frame-table thead {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+}
+
+.frame-table th {
+  padding: var(--sp-2) var(--sp-3);
+  text-align: left;
+  font-weight: 600;
+  color: var(--text-secondary);
+  background: var(--bg-secondary);
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+}
+
+.frame-table td {
+  padding: var(--sp-1) var(--sp-3);
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+}
+
+.frame-table tr:hover td {
+  background: var(--bg-tertiary);
+}
+
+.row-tx td {
+  color: var(--yellow);
+}
+
+.row-rx td {
+  color: var(--text-primary);
+}
+
+.col-ts {
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+.col-id {
+  color: var(--accent);
+  font-weight: 500;
+}
+
+.col-dir {
+  font-weight: 600;
+  font-size: 11px;
+}
+
+.col-data {
+  font-family: var(--font-mono);
+  letter-spacing: 0.5px;
+}
+
+.col-proto {
+  color: var(--orange);
+  font-size: 11px;
+}
+
+.col-summary {
+  color: var(--text-secondary);
+  font-size: 11px;
+}
+
+/* ── 状态栏 ─────────────────────────────────────────────────── */
+
+.app-footer {
+  flex-shrink: 0;
+  border-top: 1px solid var(--border);
+}
+
+.status-bar {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-4);
+  padding: var(--sp-2) var(--sp-4);
+  background: var(--bg-secondary);
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.status-on {
+  color: var(--green);
+  font-weight: 600;
+}
+
+.status-off {
+  color: var(--text-muted);
+  font-weight: 600;
+}
+
+.status-count {
+  color: var(--accent);
+  font-weight: 500;
+}
+
+.status-proto {
+  color: var(--text-muted);
+}
