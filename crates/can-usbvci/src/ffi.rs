@@ -149,10 +149,15 @@ pub struct VCI_FILTER_RECORD {
 // VCI API (controlcan.h L83-L101, 共 13 个 EXTERN_C 函数)
 // ---------------------------------------------------------------------------
 //
-// 所有函数均为 C ABI, 须在 unsafe 块中调用。设备句柄通过 (DeviceType, DeviceInd)
+// 所有函数均为 vendor 约定 ABI, 须在 unsafe 块中调用。设备句柄通过 (DeviceType, DeviceInd)
 // 二元组索引, 无需预分配句柄对象。
+//
+// ABI 约定 (Task 10 起为 extern "system"): Windows 上是 stdcall (与供应商 ControlCAN.dll
+// 一致, 符号名无前缀修饰); 非 Windows 平台上 system 与 C 等价。函数不直接调用 ——
+// 默认 (动态加载) 模式下由 [`crate::backend`] 的 libloading 符号表按名解析, 这里保留
+// 声明作为 ABI 契约与符号清单; 静态链接模式 (usbvci_static_link) 下才直接引用本块符号。
 
-unsafe extern "C" {
+unsafe extern "system" {
     /// 打开设备。
     ///
     /// - `DeviceType`: 接口卡类型, 见 [`VCI_USBCAN1`] 等常量

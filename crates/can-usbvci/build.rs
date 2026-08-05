@@ -1,21 +1,26 @@
-//! build.rs — can-usbvci 平台化链接配置 (Task 6: 平台 gating, 任何平台不 panic)
+//! build.rs — can-usbvci 平台化链接配置 (Task 6 平台 gating; Task 10 动态加载默认)
 //!
 //! build 脚本按 `target_os` 分支:
 //!
-//! - `linux`: 走现有双链接模式 (`so` 默认 / `static` 可选)。按目标架构在
+//! - `linux`: 默认**动态加载模式** (Task 10) —— 构建期不再链接 `libcontrolcan.so`,
+//!   由运行时 libloading 按名解析 (resolve_library: `CAN_USBVCI_LIB` → exe 同目录 →
+//!   LD_LIBRARY_PATH/rpath)。仅当 `CAN_USBVCI_LINK_MODE=static` 时保留静态链接
+//!   (`libcontrolcan.a` + libusb-0.1 + pthread) 并设 `usbvci_static_link` cfg,
+//!   后端 RealVciOps 此时直接引用 extern 块符号。按目标架构在
 //!   `third_party/controlcan/` 中选择供应商库目录 (x86_64 / aarch64);
 //!   其他架构 (如 armv7 / riscv64) 打 warning 并跳过链接。
-//! - `windows`: 不链接 — Task 10 将改为运行时动态加载 (`LoadLibrary`), 构建期无需供应商库。
+//! - `windows`: 不链接 — 运行时经 LoadLibrary 动态加载 `ControlCAN.dll`, 构建期无需供应商库。
 //! - `macos`: 不链接 — macOS 无供应商库, 作为 mock 逃生舱 (仅 `mock` feature 测试可用)。
 //! - 未知 OS: 打 warning 并跳过链接。
 //!
 //! 链接模式由 `CAN_USBVCI_LINK_MODE` 环境变量 (或 `--cfg CAN_USBVCI_LINK_MODE="..."` RUSTFLAGS,
 //! 经 `CARGO_CFG_CAN_USBVCI_LINK_MODE` 传递) 控制, 取值:
 //!
-//! - `so` (默认): 链接 `libcontrolcan.so`。该 .so 内嵌 libusb-0.1 全部符号,
-//!   `readelf -d` 显示 NEEDED 仅 `libpthread.so.0` + `libc.so.6`, 因此无需任何外部依赖。
+//! - `dynamic` (默认): 不链接任何 vendor 库, 运行时 libloading 加载 `.so`/`.dll`。
+//!   `so` 作为历史别名同样进入该模式 (旧脚本/文档写 `so`, 行为一致)。
 //! - `static`: 链接 `libcontrolcan.a` + 外部旧版 `libusb` (0.1 API: `usb_init` /
-//!   `usb_find_busses` / `usb_bulk_read` 等) + `pthread`。需要系统安装 libusb-dev
+//!   `usb_find_busses` / `usb_bulk_read` 等) + `pthread`, 并设 `usbvci_static_link` cfg
+//!   (backend 直接引用 extern 符号)。需要系统安装 libusb-dev
 //!   (提供 `/usr/include/usb.h`, 不是 libusb-1.0-0-dev)。
 //!
 //! 供应商库路径: `<workspace-root>/third_party/controlcan/`, 由 Task 5 的
@@ -43,6 +48,9 @@ fn vendor_lib_dir(vendor_root: &Path) -> Option<PathBuf> {
 }
 
 fn main() {
+    // 声明自定义 cfg, 避免未设置时 rustc 的 unexpected_cfgs 告警 (1.80+ 默认开启)。
+    println!("cargo:rustc-check-cfg=cfg(usbvci_static_link)");
+
     // mock feature: 不链接真实 controlcan 库 (cargo 对启用的 feature 注入 CARGO_FEATURE_<NAME> 环境变量),
     // 使 `cargo test --features mock` 在没有供应商库 / 无硬件的主机上也能构建运行 (MockVciOps 桩不引用 FFI 符号)。
     if env::var("CARGO_FEATURE_MOCK").is_ok() {
@@ -57,7 +65,7 @@ fn main() {
     // 平台 gating: 按 target_os 分支, 任何平台都不 panic。
     let target_os = env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
     match target_os.as_str() {
-        // Windows: Task 10 改为运行时动态加载 (LoadLibrary), 构建期不链接任何供应商库。
+        // Windows: Task 10 运行时动态加载 (LoadLibrary), 构建期不链接任何供应商库。
         "windows" => {
             println!("can-usbvci: Windows 平台 → 动态加载模式 (Task 10), 构建期不链接");
         }
@@ -65,7 +73,7 @@ fn main() {
         "macos" => {
             println!("can-usbvci: macOS 平台 → mock 逃生舱, 构建期不链接 (仅 mock 测试可用)");
         }
-        // Linux: 走现有双链接模式。
+        // Linux: 默认动态加载, static 模式保留静态链接。
         "linux" => link_linux(),
         // 未知平台: warning + 不链接。
         other => {
@@ -82,7 +90,7 @@ fn main() {
     }
 }
 
-/// Linux 链接入口: 按架构找供应商库, 按链接模式链接。
+/// Linux 链接入口: 按架构找供应商库, 按链接模式处理。
 fn link_linux() {
     // 供应商库根目录 = workspace 根 (CARGO_MANIFEST_DIR/../..) + third_party/controlcan
     let manifest_dir =
@@ -102,37 +110,45 @@ fn link_linux() {
         );
         return;
     };
-    // 转成绝对路径: 链接搜索路径与 rpath 都会原样写进产物, 相对路径在运行时按 CWD 解析,
-    // 不可靠 (尤其跨目录启动二进制时)。注意 std::path::absolute 不会消解 `..`, 须用
-    // canonicalize (库目录存在, 一定能解析)。
+    // 转成绝对路径: 动态加载模式会把该目录写进 rpath (帮助测试二进制找到 .so),
+    // 相对路径在运行时按 CWD 解析, 不可靠。注意 std::path::absolute 不会消解 `..`, 须用
+    // canonicalize (目录存在, 一定能解析)。
     let lib_dir = std::fs::canonicalize(&lib_dir).unwrap_or(lib_dir);
     println!("cargo:rerun-if-changed={}", lib_dir.display());
 
-    // 链接模式: 环境变量优先, 其次 CARGO_CFG_* (来自 RUSTFLAGS --cfg), 默认 "so"
+    // 链接模式: 环境变量优先, 其次 CARGO_CFG_* (来自 RUSTFLAGS --cfg), 默认 "dynamic"
     let link_mode = env::var("CAN_USBVCI_LINK_MODE")
         .or_else(|_| env::var("CARGO_CFG_CAN_USBVCI_LINK_MODE"))
-        .unwrap_or_else(|_| "so".to_owned());
+        .unwrap_or_else(|_| "dynamic".to_owned());
 
-    // 非法取值不再 panic: 打印 warning 并回退默认 so (本任务承诺 build.rs 任何平台不 panic)。
-    let effective_mode;
-    match link_mode.as_str() {
-        "so" => {
-            link_shared(&lib_dir);
-            effective_mode = "so";
-        }
+    // 非法取值不 panic: 打印 warning 并回退默认 dynamic (build.rs 任何平台不 panic)。
+    let effective_mode = match link_mode.as_str() {
+        // 静态链接保留: 链接 libcontrolcan.a + libusb(0.1) + pthread, 并设 cfg 让
+        // backend 直接引用 extern 块符号 (不依赖运行时 .so)。
         "static" => {
             link_static(&lib_dir);
-            effective_mode = "static";
+            println!("cargo:rustc-cfg=usbvci_static_link");
+            "static"
+        }
+        // 动态加载 (默认): 不 emit link-lib, 由 libloading 运行时解析 .so。
+        // "so" 是历史别名 (旧文档默认值), 语义一致。
+        "dynamic" | "so" => {
+            prepare_dynamic(&lib_dir);
+            if link_mode == "so" {
+                "so (历史别名 → 动态加载)"
+            } else {
+                "dynamic"
+            }
         }
         other => {
             println!(
                 "cargo:warning=can-usbvci: CAN_USBVCI_LINK_MODE 取值无效: {other:?} \
-                 (仅支持 \"so\" 或 \"static\"), 回退默认 so"
+                 (仅支持 \"dynamic\" / \"static\", 历史值 \"so\" 等同 dynamic), 回退默认 dynamic"
             );
-            link_shared(&lib_dir);
-            effective_mode = "so";
+            prepare_dynamic(&lib_dir);
+            "dynamic"
         }
-    }
+    };
 
     println!(
         "can-usbvci: 链接模式={effective_mode}, 供应商库目录={}",
@@ -140,31 +156,23 @@ fn link_linux() {
     );
 }
 
+/// 动态加载模式: 不 emit 任何 link-lib (构建期不依赖 vendor 库存在); 若 .so 在仓库内,
+/// 把目录写进 rpath 帮助本 crate 的测试二进制运行时找到库。仅本 crate 自身目标生效,
+/// 依赖方 (如 can-monitor) 的 rpath 由各自 build.rs 注入。
+fn prepare_dynamic(lib_dir: &Path) {
+    let so = lib_dir.join("libcontrolcan.so");
+    if so.is_file() {
+        println!("cargo:rustc-link-arg=-Wl,-rpath,{}", lib_dir.display());
+    }
+}
+
 fn fail_missing(kind: &str, path: &Path) -> ! {
     panic!(
         "can-usbvci: 未找到 controlcan {kind} 库: {}\n\
          请先执行 scripts/fetch-vendor.sh 从 SDK 拷贝供应商库 (Linux资料包V1.45/二次开发库文件)。\n\
-         或改用 CAN_USBVCI_LINK_MODE=so 链接自带 libusb 符号的共享库。",
+         或改用默认动态加载模式 (CAN_USBVCI_LINK_MODE 留空/dynamic, 运行时加载 .so)。",
         path.display()
     );
-}
-
-/// `so` 模式: 自包含共享库, 无外部依赖。
-fn link_shared(lib_dir: &Path) {
-    let so = lib_dir.join("libcontrolcan.so");
-    if !so.is_file() {
-        fail_missing("共享(.so)", &so);
-    }
-    println!("cargo:rustc-link-search=native={}", lib_dir.display());
-    println!("cargo:rustc-link-lib=dylib=controlcan");
-    // 供应商 .so 位于仓库内非标准路径, 把目录写入 rpath, 使本 crate 自身目标
-    // (如未来调用 VCI 函数的测试二进制) 运行时不依赖 ldconfig。仅 .so 模式需要。
-    //
-    // 重要: cargo 的 build script 链接参数只作用于发出指令的 crate 自身的目标
-    // (cargo 源码 add_native_deps: 仅 LinkArgTarget::Cdylib 允许跨包传递, 见
-    // rust-lang/cargo#9562)。因此这里的 rpath 不会传播到依赖方 (如 can-monitor)
-    // 的最终二进制 —— 那由 can-monitor/build.rs 另行注入。
-    println!("cargo:rustc-link-arg=-Wl,-rpath,{}", lib_dir.display());
 }
 
 /// `static` 模式: 静态库 + 外部 libusb(0.1) + pthread。

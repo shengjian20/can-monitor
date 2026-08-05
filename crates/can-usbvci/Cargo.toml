@@ -6,8 +6,16 @@ description = "ZLGCAN (周立功) USBCAN 系列 USB-CAN 适配器的 VCI FFI 绑
 
 [dependencies]
 can-types = { path = "../can-types" }
+# 运行时动态加载 VCI 动态库 (libcontrolcan.so / ControlCAN.dll) —— 默认模式。
+# Linux 静态链接模式 (CAN_USBVCI_LINK_MODE=static) 下仍需要本依赖 (编译期必然解析,
+# 静态路径不实际调用 libloading 函数, 链接器会剔除未引用符号)。
+libloading = "0.8"
 
 [features]
 # mock 测试用 (不链接真实 controlcan 库, 用 MockVciOps 桩替换 FFI 调用)
 mock = []
+# 真实库加载 smoke test (非 mock 下启用): 本机 third_party/controlcan/<arch>/libcontrolcan.so
+# 存在 → 实际加载 + 解析全部 13 个 VCI 符号; 库缺失 → 断言返回友好错误而非 panic。
+# 仅用于本机/CI 验证, 不随默认构建启用。
+real-ffi = []
 default = []

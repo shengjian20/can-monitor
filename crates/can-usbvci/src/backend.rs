@@ -1,10 +1,14 @@
 //! # UsbVciBackend — USBCAN (VCI) 后端实现
 //!
-//! 在 [`crate::ffi`] 的 `extern "C"` 绑定之上实现 [`CanBackend`] trait, 提供
+//! 在 [`crate::ffi`] 的 `extern "system"` 绑定之上实现 [`CanBackend`] trait, 提供
 //! USBCAN-I/II、USBCAN-E-U/2E-U 等 ZLGCAN 设备的经典 CAN 收发能力。
 //!
 //! ## 设计要点
 //!
+//! - **动态加载** (Task 10): [`RealVciOps`] 默认经 libloading 运行时加载
+//!   `libcontrolcan.so` (Linux) / `ControlCAN.dll` (Windows) 并解析全部 13 个 VCI
+//!   符号, 构建期不再链接 `.so`; 库缺失返回 [`CanError::Io`] 友好错误而非 panic。
+//!   `CAN_USBVCI_LINK_MODE=static` 时走静态链接 (符号直接取 extern 块)。
 //! - **串行化**: vendor 库非线程安全, 所有 VCI 调用 (open/init/start/transmit/
 //!   receive/get_rx_num/close) 一律在内部 `Mutex<()>` 临界区内执行。
 //! - **轮询接收**: `read_frame` 按 vendor 轮询节奏 (30ms) 查询驱动接收缓冲,
@@ -22,6 +26,8 @@
 //! 并发/热插拔/帧转换) 用单元测试验证, 无需真实硬件。
 
 use std::collections::VecDeque;
+#[cfg(all(not(feature = "mock"), not(usbvci_static_link)))]
+use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime};
@@ -31,7 +37,15 @@ use can_types::{
 };
 
 #[cfg(not(feature = "mock"))]
+use libloading::Library;
+
+#[cfg(not(feature = "mock"))]
+use core::ffi::c_void;
+
+#[cfg(not(feature = "mock"))]
 use crate::ffi::STATUS_OK;
+#[cfg(not(feature = "mock"))]
+use crate::ffi::VCI_BOARD_INFO;
 use crate::ffi::{VCI_CAN_OBJ, VCI_INIT_CONFIG};
 
 // ---------------------------------------------------------------------------
@@ -160,18 +174,180 @@ pub(crate) trait VciOps: Send + Sync {
     fn get_rx_num(&self, device_type: u32, device_ind: u32, channel: u32) -> Result<usize>;
 }
 
-/// 真实 FFI 实现: 直调 [`crate::ffi`] 的 `extern "C"` 绑定。
+/// 13 个 VCI 函数指针表 (符号表)。
+///
+/// 两种来源: 动态模式经 libloading 从已加载库按名解析; 静态链接模式
+/// (build.rs 收到 `CAN_USBVCI_LINK_MODE=static` 时设 `usbvci_static_link` cfg,
+/// 并链接 `libcontrolcan.a`) 直接取 [`crate::ffi`] extern 块函数项。
+///
+/// 尚未被 [`VciOps`] 消费的符号 (ReadBoardInfo/SetReference/ClearBuffer/ResetCAN/
+/// UsbDeviceReset/FindUsbDevice2) 供 Task 12 设备发现等后续功能使用, 现由
+/// `real-ffi` smoke test 验证可解析。
+#[cfg(not(feature = "mock"))]
+#[allow(dead_code)]
+macro_rules! vci_symbols {
+    ($( $field:ident => $fn:ident ( $($ty:ty),* $(,)? ) ),* $(,)?) => {
+        #[allow(dead_code)]
+        struct VciSymbols {
+            $( $field: unsafe extern "system" fn($($ty),*) -> u32, )*
+        }
+
+        impl VciSymbols {
+            /// 静态链接来源: 直接引用 extern 块函数项 (符号已在链接期解析)。
+            #[cfg(usbvci_static_link)]
+            fn from_extern() -> Self {
+                Self {
+                    $( $field: crate::ffi::$fn, )*
+                }
+            }
+
+            /// 动态加载来源: 从已加载的动态库按符号名解析全部函数指针。
+            ///
+            /// # Safety
+            /// `lib` 必须保持加载, 覆盖返回的符号表的使用期 (调用方持有 `Library` 句柄)。
+            #[cfg(not(usbvci_static_link))]
+            unsafe fn from_library(lib: &Library) -> Result<Self> {
+                Ok(Self {
+                    $( $field: *lib.get::<unsafe extern "system" fn($($ty),*) -> u32>(
+                        concat!(stringify!($fn), "\0").as_bytes(),
+                    )
+                    .map_err(|e| {
+                        CanError::Io(std::io::Error::other(format!(
+                            "解析 VCI 符号 {} 失败: {e}; 供应商库可能版本不完整 \
+                             (需 Linux 资料包 V1.45 的 libcontrolcan.so / ControlCAN.dll)",
+                            stringify!($fn)
+                        )))
+                    })? ,)*
+                })
+            }
+        }
+    };
+}
+
+#[cfg(not(feature = "mock"))]
+vci_symbols! {
+    open_device => VCI_OpenDevice (u32, u32, u32),
+    close_device => VCI_CloseDevice (u32, u32),
+    init_can => VCI_InitCAN (u32, u32, u32, *mut VCI_INIT_CONFIG),
+    read_board_info => VCI_ReadBoardInfo (u32, u32, *mut VCI_BOARD_INFO),
+    set_reference => VCI_SetReference (u32, u32, u32, u32, *mut c_void),
+    get_receive_num => VCI_GetReceiveNum (u32, u32, u32),
+    clear_buffer => VCI_ClearBuffer (u32, u32, u32),
+    start_can => VCI_StartCAN (u32, u32, u32),
+    reset_can => VCI_ResetCAN (u32, u32, u32),
+    transmit => VCI_Transmit (u32, u32, u32, *mut VCI_CAN_OBJ, u32),
+    receive => VCI_Receive (u32, u32, u32, *mut VCI_CAN_OBJ, u32, i32),
+    usb_device_reset => VCI_UsbDeviceReset (u32, u32, u32),
+    find_usb_device2 => VCI_FindUsbDevice2 (*mut VCI_BOARD_INFO),
+}
+
+/// 真实 VCI 实现: 解析/加载动态库并解析全部 13 个符号后调用。
+///
+/// - 默认 (动态加载): [`RealVciOps::try_new`] 用 libloading 加载
+///   `libcontrolcan.so` (Linux) / `ControlCAN.dll` (Windows) 并解析符号; 库或符号
+///   缺失返回 [`CanError::Io`] 友好错误, 绝不 panic。
+/// - 静态链接 (cfg `usbvci_static_link`, 见 build.rs): 符号直接取 extern 块函数项。
 ///
 /// 仅在非 `mock` 构建下编译 —— `mock` 下编译会引用真实库符号导致链接失败。
 #[cfg(not(feature = "mock"))]
-#[derive(Debug, Clone, Copy, Default)]
-pub(crate) struct RealVciOps;
+pub(crate) struct RealVciOps {
+    /// 13 个 VCI 函数指针 (调用统一走这里, 静态/动态来源一致)。
+    syms: VciSymbols,
+    /// 动态库句柄: 仅动态模式持有, 防止库被卸载后符号悬垂。
+    #[allow(dead_code)]
+    _library: Option<Library>,
+}
+
+#[cfg(not(feature = "mock"))]
+impl RealVciOps {
+    /// 构造真实 ops: 解析库路径 → 加载 → 解析 13 个符号。
+    ///
+    /// @return 成功返回可用 ops; 库/符号缺失返回 [`CanError::Io`] (带可操作提示), 不 panic。
+    pub(crate) fn try_new() -> Result<Self> {
+        #[cfg(usbvci_static_link)]
+        {
+            Ok(Self {
+                syms: VciSymbols::from_extern(),
+                _library: None,
+            })
+        }
+
+        #[cfg(not(usbvci_static_link))]
+        {
+            let filename = resolve_library()?;
+            let library = load_library(&filename)?;
+            // SAFETY: `library` 句柄由本结构体 `_library` 字段持有, 存活期覆盖所有符号调用。
+            let syms = unsafe { VciSymbols::from_library(&library)? };
+            Ok(Self {
+                syms,
+                _library: Some(library),
+            })
+        }
+    }
+}
+
+/// VCI 动态库文件名: Linux 为 `libcontrolcan.so`, Windows 为 `ControlCAN.dll`。
+#[cfg(not(feature = "mock"))]
+#[cfg(not(usbvci_static_link))]
+fn library_filename() -> &'static str {
+    #[cfg(target_os = "windows")]
+    {
+        "ControlCAN.dll"
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        "libcontrolcan.so"
+    }
+}
+
+/// 解析 VCI 动态库路径, 优先级: `CAN_USBVCI_LIB` 环境变量 → 可执行文件同目录 →
+/// 系统搜索路径 (Linux 经 dlopen 的 LD_LIBRARY_PATH / rpath / ldconfig; Windows 经
+/// LoadLibrary 的 exe 目录 / System32 / PATH)。
+///
+/// @return 最终交给 `Library::new` 的路径或文件名。
+#[cfg(not(feature = "mock"))]
+#[cfg(not(usbvci_static_link))]
+fn resolve_library() -> Result<PathBuf> {
+    if let Ok(path) = std::env::var("CAN_USBVCI_LIB") {
+        if !path.trim().is_empty() {
+            return Ok(PathBuf::from(path));
+        }
+    }
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            let candidate = dir.join(library_filename());
+            if candidate.is_file() {
+                return Ok(candidate);
+            }
+        }
+    }
+    Ok(PathBuf::from(library_filename()))
+}
+
+/// 加载 VCI 动态库。
+///
+/// @param filename 路径或文件名 (文件名时按 OS 搜索路径解析)。
+/// @return 成功返回库句柄; 加载失败返回 [`CanError::Io`] (带部署提示), 不 panic。
+#[cfg(not(feature = "mock"))]
+#[cfg(not(usbvci_static_link))]
+fn load_library(filename: &Path) -> Result<Library> {
+    // SAFETY: 库构造会执行其加载与初始化例程 (dlopen/LoadLibrary); 供应商库为普通 C 库,
+    // 无需要调用方配合的初始化前置条件。
+    unsafe { Library::new(filename) }.map_err(|e| {
+        CanError::Io(std::io::Error::other(format!(
+            "加载 VCI 动态库 {} 失败: {e}; 请确认供应商库已随二进制部署 \
+             (Linux: libcontrolcan.so 经 LD_LIBRARY_PATH/rpath; Windows: ControlCAN.dll), \
+             或设置 CAN_USBVCI_LIB 显式指定路径",
+            filename.display()
+        )))
+    })
+}
 
 #[cfg(not(feature = "mock"))]
 impl VciOps for RealVciOps {
     fn open(&self, device_type: u32, device_ind: u32) -> Result<()> {
-        // SAFETY: 纯标量参数, 无指针, 符合 C ABI 调用约定。
-        let status = unsafe { crate::ffi::VCI_OpenDevice(device_type, device_ind, 0) };
+        // SAFETY: 纯标量参数, 函数指针来自已加载库/静态链接, ABI 为 extern "system"。
+        let status = unsafe { (self.syms.open_device)(device_type, device_ind, 0) };
         if status == u32::from(STATUS_OK) {
             Ok(())
         } else {
@@ -182,7 +358,7 @@ impl VciOps for RealVciOps {
     fn close(&self, device_type: u32, device_ind: u32) -> Result<()> {
         // SAFETY: 纯标量参数。
         // 设备可能已被拔出, 关闭失败不可恢复, 忽略返回值。
-        let _ = unsafe { crate::ffi::VCI_CloseDevice(device_type, device_ind) };
+        let _ = unsafe { (self.syms.close_device)(device_type, device_ind) };
         Ok(())
     }
 
@@ -196,7 +372,7 @@ impl VciOps for RealVciOps {
         let mut config = *config;
         // SAFETY: config 为栈上 `repr(C)` 结构体的可变拷贝, 指针在本次调用内有效。
         let status = unsafe {
-            crate::ffi::VCI_InitCAN(device_type, device_ind, channel, &mut config as *mut _)
+            (self.syms.init_can)(device_type, device_ind, channel, &mut config as *mut _)
         };
         if status == u32::from(STATUS_OK) {
             Ok(())
@@ -207,7 +383,7 @@ impl VciOps for RealVciOps {
 
     fn start_can(&self, device_type: u32, device_ind: u32, channel: u32) -> Result<()> {
         // SAFETY: 纯标量参数。
-        let status = unsafe { crate::ffi::VCI_StartCAN(device_type, device_ind, channel) };
+        let status = unsafe { (self.syms.start_can)(device_type, device_ind, channel) };
         if status == u32::from(STATUS_OK) {
             Ok(())
         } else {
@@ -224,7 +400,7 @@ impl VciOps for RealVciOps {
     ) -> Result<usize> {
         // SAFETY: objs 为调用方持有的可变切片, 指针与长度匹配, 本次调用内有效。
         let sent = unsafe {
-            crate::ffi::VCI_Transmit(
+            (self.syms.transmit)(
                 device_type,
                 device_ind,
                 channel,
@@ -244,7 +420,7 @@ impl VciOps for RealVciOps {
     ) -> Result<usize> {
         // SAFETY: objs 为调用方持有的可变切片, 指针与长度匹配; WaitTime=0 非阻塞。
         let got = unsafe {
-            crate::ffi::VCI_Receive(
+            (self.syms.receive)(
                 device_type,
                 device_ind,
                 channel,
@@ -258,7 +434,7 @@ impl VciOps for RealVciOps {
 
     fn get_rx_num(&self, device_type: u32, device_ind: u32, channel: u32) -> Result<usize> {
         // SAFETY: 纯标量参数。
-        let num = unsafe { crate::ffi::VCI_GetReceiveNum(device_type, device_ind, channel) };
+        let num = unsafe { (self.syms.get_receive_num)(device_type, device_ind, channel) };
         // 设备拔出时驱动返回 0xFFFFFFFF (已知 ZLGCAN 行为), 其余情况均为合法帧数。
         if num == u32::MAX {
             Err(CanError::DeviceUnplugged)
@@ -425,11 +601,13 @@ impl CanBackend for UsbVciBackend {
 
         #[cfg(not(feature = "mock"))]
         {
+            // 运行时加载 VCI 动态库并解析全部符号; 库缺失返回友好错误, 不 panic。
+            let ops = RealVciOps::try_new()?;
             let backend = Self::new_with(
                 device_type,
                 device_index,
                 channel,
-                Box::new(RealVciOps),
+                Box::new(ops),
                 RECONNECT_DELAY,
                 RECONNECT_ATTEMPTS,
             );
@@ -1003,5 +1181,106 @@ mod mock_tests {
         .err()
         .expect("open 应返回错误");
         assert!(matches!(err, CanError::Unsupported(_)));
+    }
+}
+
+/// 真实库加载 smoke test (feature = "real-ffi"): 验证 libloading 动态加载路径。
+///
+/// 本机 third_party/controlcan/<arch>/libcontrolcan.so 存在时真实加载并解析全部
+/// 13 个符号 (本任务硬性要求); 库缺失时加载测试打印 SKIP 通过 —— "库缺失返回友好
+/// 错误" 由 `missing_library_*` 用不存在的路径专门断言。
+#[cfg(all(
+    test,
+    feature = "real-ffi",
+    not(feature = "mock"),
+    not(usbvci_static_link)
+))]
+mod real_ffi_tests {
+    use super::*;
+
+    /// 供应商库路径 = workspace 根 (CARGO_MANIFEST_DIR/../..) + third_party/controlcan/<arch>。
+    fn vendor_lib_path() -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("..")
+            .join("third_party")
+            .join("controlcan")
+            .join(std::env::consts::ARCH)
+            .join("libcontrolcan.so")
+    }
+
+    /// 加载本机供应商库并解析全部 13 个符号, 且函数指针可真实调用 (无设备时
+    /// OpenDevice 返回失败, 不 panic)。
+    #[test]
+    fn loads_vendor_lib_and_resolves_all_13_symbols() {
+        let lib_path = vendor_lib_path();
+        if !lib_path.is_file() {
+            eprintln!("SKIP: 供应商库不存在, 跳过真实加载: {}", lib_path.display());
+            return;
+        }
+        let library = load_library(&lib_path).expect("应能加载供应商库");
+        // SAFETY: library 句柄在本测试存活期内有效。
+        let syms = unsafe { VciSymbols::from_library(&library) }.expect("应能解析全部 13 个符号");
+        let pointers: [usize; 13] = [
+            syms.open_device as usize,
+            syms.close_device as usize,
+            syms.init_can as usize,
+            syms.read_board_info as usize,
+            syms.set_reference as usize,
+            syms.get_receive_num as usize,
+            syms.clear_buffer as usize,
+            syms.start_can as usize,
+            syms.reset_can as usize,
+            syms.transmit as usize,
+            syms.receive as usize,
+            syms.usb_device_reset as usize,
+            syms.find_usb_device2 as usize,
+        ];
+        assert!(
+            pointers.iter().all(|p| *p != 0),
+            "全部 13 个符号应解析为非空函数指针"
+        );
+        // 真实调用一次: 无设备时本 .so 返回 0xFFFFFFFF (已知 ZLGCAN "无设备/错误" 哨兵值,
+        // 与 VCI_GetReceiveNum 拔出语义一致); 返回 0/1 亦属正常。重点是库加载 + 符号
+        // 真实可调, 不 panic。
+        let status = unsafe { (syms.open_device)(crate::ffi::VCI_USBCAN2, 0, 0) };
+        assert!(
+            matches!(status, 0 | 1 | u32::MAX),
+            "OpenDevice 应返回 0/1/0xFFFFFFFF, 得到 {status}"
+        );
+    }
+
+    /// CAN_USBVCI_LIB 环境变量注入 → resolve_library 优先返回该路径。
+    #[test]
+    fn resolve_library_prefers_env_override() {
+        std::env::set_var("CAN_USBVCI_LIB", "/tmp/vci-lib-candidate.so");
+        let path = resolve_library().expect("解析库路径不应失败");
+        std::env::remove_var("CAN_USBVCI_LIB");
+        assert_eq!(path, PathBuf::from("/tmp/vci-lib-candidate.so"));
+    }
+
+    /// 库缺失 → load_library 返回 CanError::Io (带部署提示), 不 panic。
+    #[test]
+    fn missing_library_returns_friendly_error() {
+        let err = load_library(Path::new(
+            "/nonexistent/definitely-missing-libcontrolcan.so",
+        ))
+        .expect_err("缺失库应返回 Err");
+        assert!(
+            matches!(err, CanError::Io(_)),
+            "应返回 CanError::Io, 得到 {err:?}"
+        );
+    }
+
+    /// 库缺失 → RealVciOps::try_new 返回 Err 而非 panic。
+    #[test]
+    fn try_new_returns_error_for_missing_library() {
+        std::env::set_var(
+            "CAN_USBVCI_LIB",
+            "/nonexistent/definitely-missing-libcontrolcan.so",
+        );
+        let result = RealVciOps::try_new();
+        std::env::remove_var("CAN_USBVCI_LIB");
+        assert!(result.is_err(), "库缺失时 try_new 应返回 Err, 而非 panic");
     }
 }
