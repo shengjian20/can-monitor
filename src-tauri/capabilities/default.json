@@ -1,0 +1,9 @@
+{
+  "$schema": "https://raw.githubusercontent.com/tauri-apps/tauri/dev/crates/tauri-utils/schema/capability.json",
+  "identifier": "default",
+  "description": "默认权限 — 主窗口可调用 Tauri 命令",
+  "windows": ["main"],
+  "permissions": [
+    "core:default"
+  ]
+}

@@ -1,0 +1,21 @@
+[package]
+name = "can-monitor-tauri"
+version = "0.1.0"
+description = "CAN Monitor — 跨平台桌面 GUI (Tauri v2)"
+edition = "2021"
+
+[lib]
+name = "can_monitor_tauri_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+can-types = { path = "../crates/can-types" }
+can-monitor-core = { path = "../crates/can-monitor-core" }
+can-socketcan = { path = "../crates/can-socketcan" }
+can-usbvci = { path = "../crates/can-usbvci" }

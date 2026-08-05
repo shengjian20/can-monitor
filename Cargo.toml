@@ -3,6 +3,7 @@ members = [
     "crates/can-types",
     "crates/can-socketcan",
     "crates/can-usbvci",
+    "crates/can-devices",
     "crates/canopen-stack",
     "crates/j1939-stack",
     "crates/can-monitor-core",
