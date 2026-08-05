@@ -587,7 +587,7 @@ mod tests {
         let e: Box<dyn std::error::Error> = Box::new(CanError::DeviceUnplugged);
         assert_eq!(e.to_string(), "设备已拔出");
 
-        let io_err = io::Error::new(io::ErrorKind::Other, "底层失败");
+        let io_err = io::Error::other("底层失败");
         let can_err = CanError::Io(io_err);
         assert!(can_err.source().is_some());
         // 非 Io 变体没有 source。

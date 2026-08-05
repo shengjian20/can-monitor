@@ -4,3 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+can-types = { path = "../can-types" }
+# 固定精确版本: pre-1.0 crate API 不稳定, 锁死 0.6.1 便于隔离层升级。
+# 不启用 tokio feature (本 crate 同步实现, 不引入异步)。
+canopen-host = { version = "=0.6.1", default-features = false }

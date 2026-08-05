@@ -4,3 +4,9 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+socketcan = { version = "=3.6.2", default-features = false }
+can-types = { path = "../can-types" }
+
+[features]
+# vcan 集成测试 (需要本机存在 vcan0 / root 权限创建 vcan 接口,默认关闭)
+vcan-test = []
