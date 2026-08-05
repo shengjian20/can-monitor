@@ -10,9 +10,9 @@
 //!   (提供 `/usr/include/usb.h`, 不是 libusb-1.0-0-dev)。
 //!
 //! 供应商库路径: `<workspace-root>/third_party/controlcan/`, 由 Task 5 的
-//! `scripts/fetch-vendor.sh` 抓取。目录布局:
-//! - `third_party/controlcan/`            → aarch64 (ARM平台/64bit)
-//! - `third_party/controlcan/x86_64/`     → x86_64 (x86平台/64位linux系统)
+//! `scripts/fetch-vendor.sh` 抓取。目录布局 (对称):
+//! - `third_party/controlcan/aarch64/`   → aarch64 (ARM平台/64bit)
+//! - `third_party/controlcan/x86_64/`    → x86_64 (x86平台/64位linux系统)
 
 use std::env;
 use std::path::{Path, PathBuf};
@@ -27,7 +27,7 @@ fn vendor_lib_dir(vendor_root: &Path) -> PathBuf {
     if arch.starts_with("x86_64") {
         vendor_root.join("x86_64")
     } else if arch.starts_with("aarch64") {
-        vendor_root.to_path_buf()
+        vendor_root.join("aarch64")
     } else {
         panic!(
             "can-usbvci: 不支持的 target 架构: {target} (仅提供 x86_64 与 aarch64 的供应商库)"

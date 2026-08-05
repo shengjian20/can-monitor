@@ -133,7 +133,7 @@ USB-CAN 后端 (crate `can-usbvci`) 通过 ZLGCAN VCI 驱动访问设备,支持 
 
 - **仅经典 CAN**:USBCAN 硬件不支持 CANFD,FD 帧会返回 `Unsupported`。SocketCAN 后端才支持 FD (`--fd`)
 - **波特率**: 固定 500kbps (定时器 0x00/0x1C),验收码 0、屏蔽码全 F (接收所有 ID),滤波关闭,正常模式
-- **供应商库**: `scripts/fetch-vendor.sh` 从 SDK `Linux资料包V1.45/二次开发库文件` 拷贝到 `third_party/controlcan/` (aarch64 在根目录,x86_64 在 `x86_64/` 子目录)。`third_party/` 已被 .gitignore 忽略,不提交 git
+- **供应商库**: `scripts/fetch-vendor.sh` 从 SDK `Linux资料包V1.45/二次开发库文件` 拷贝到 `third_party/controlcan/` (对称布局: aarch64 在 `aarch64/` 子目录,x86_64 在 `x86_64/` 子目录)。`third_party/` 跟随源码提交发布 (已从 .gitignore 移除)
 - **链接模式** (环境变量 `CAN_USBVCI_LINK_MODE`):
   - `so` (默认): 链接 `libcontrolcan.so`。该 .so 内嵌 libusb-0.1 全部符号,运行时无需任何外部依赖,部署最省事
   - `static`: 链接 `libcontrolcan.a` + 系统旧版 `libusb` (0.1 API) + `pthread`,需要 `libusb-dev` (提供 `/usr/include/usb.h`,不是 libusb-1.0)
@@ -170,7 +170,7 @@ scripts/
   vcan-setup.sh   创建 vcan0 / vcan1
   build-cross.sh  aarch64 交叉编译 (SONAME 修复 + 产物验证)
 .devcontainer/    开发容器 (工具链 + 交叉编译环境)
-third_party/      controlcan 供应商库 (git 忽略)
+third_party/      controlcan 供应商库 (aarch64/ + x86_64/,跟随源码发布)
 docs/             架构文档
 ```
 

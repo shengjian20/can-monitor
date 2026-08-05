@@ -29,7 +29,7 @@ fn main() {
     let lib_dir = if arch.starts_with("x86_64") {
         vendor_root.join("x86_64")
     } else if arch.starts_with("aarch64") {
-        vendor_root
+        vendor_root.join("aarch64")
     } else {
         return; // 非 x86_64/aarch64, 无供应商库, 跳过
     };

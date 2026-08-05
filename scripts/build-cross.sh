@@ -19,7 +19,7 @@ rustup target add aarch64-unknown-linux-gnu >/dev/null
 # (如 /workspaces/.../libcontrolcan.so), 部署平台无法用 LD_LIBRARY_PATH 覆盖查找。
 # 有 patchelf 时统一补上 SONAME (幂等); 缺失时仅警告 (若 .so 已带 SONAME 则无影响)。
 if command -v patchelf >/dev/null 2>&1; then
-    for so in third_party/controlcan/libcontrolcan.so third_party/controlcan/x86_64/libcontrolcan.so; do
+    for so in third_party/controlcan/aarch64/libcontrolcan.so third_party/controlcan/x86_64/libcontrolcan.so; do
         if [ -f "$so" ]; then
             patchelf --set-soname "$(basename "$so")" "$so"
         fi

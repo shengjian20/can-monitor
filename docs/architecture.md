@@ -123,11 +123,13 @@ pub trait CanBackend {
 `can-usbvci` 的 `build.rs` 按 `TARGET` 架构自动选择库目录:
 
 ```
-third_party/controlcan/          → aarch64 (ARM平台/64bit 拷贝而来)
-third_party/controlcan/x86_64/   → x86_64 (x86平台/64位linux系统)
+third_party/controlcan/aarch64/   → aarch64 (ARM平台/64bit 拷贝而来)
+third_party/controlcan/x86_64/    → x86_64 (x86平台/64位linux系统)
+third_party/controlcan/controlcan.h → 架构无关头文件
 ```
 
-- TARGET 前缀匹配 (`x86_64*` → `x86_64/`, `aarch64*` → 根目录),先 `split('.')` 剥掉 cargo-zigbuild 的 `.2.23` glibc 后缀再匹配;其他架构构建直接 panic 提示
+- TARGET 前缀匹配 (`x86_64*` → `x86_64/`, `aarch64*` → `aarch64/`),先 `split('.')` 剥掉 cargo-zigbuild 的 `.2.23` glibc 后缀再匹配;其他架构构建直接 panic 提示
+- 目录对称布局: 两个架构同级子目录;`third_party/` 跟随源码提交发布 (不再 gitignore)
 - 库目录用 `std::fs::canonicalize` 转绝对路径 (相对路径在运行时按 CWD 解析,不可靠)
 - **双链接模式** (环境变量 `CAN_USBVCI_LINK_MODE`,缺省 `so`):
   - `so`: `rustc-link-lib=dylib=controlcan` + 注入 rpath。该 .so 内嵌 libusb-0.1 符号 (`readelf -d` 仅 NEEDED `libpthread` + `libc`),无外部依赖
@@ -151,13 +153,13 @@ bash scripts/build-cross.sh
 
 # 2. 部署到平台 (需带 .so)
 scp target/aarch64-unknown-linux-gnu/release/can-monitor jz@172.22.2.242:/tmp/
-scp third_party/controlcan/libcontrolcan.so jz@172.22.2.242:/tmp/
+scp third_party/controlcan/aarch64/libcontrolcan.so jz@172.22.2.242:/tmp/
 ssh jz@172.22.2.242 "chmod +x /tmp/can-monitor && LD_LIBRARY_PATH=/tmp /tmp/can-monitor --help"
 ```
 
 ### 6.3 SONAME 坑 (必读)
 
-供应商 `libcontrolcan.so` **没有 SONAME**。zig/lld 链接时会把它解析后的绝对路径 (如 `/workspaces/can_monitor/third_party/controlcan/libcontrolcan.so`) 写进 `DT_NEEDED`;glibc 对含 `/` 的 NEEDED 按字面路径打开,**LD_LIBRARY_PATH 不生效**,部署平台必然报 "cannot open shared object file"。
+供应商 `libcontrolcan.so` **没有 SONAME**。zig/lld 链接时会把它解析后的绝对路径 (如 `/workspaces/can_monitor/third_party/controlcan/aarch64/libcontrolcan.so`) 写进 `DT_NEEDED`;glibc 对含 `/` 的 NEEDED 按字面路径打开,**LD_LIBRARY_PATH 不生效**,部署平台必然报 "cannot open shared object file"。
 
 修复: `patchelf --set-soname libcontrolcan.so <so>` (幂等) 补 SONAME,重链后 `DT_NEEDED` 变成纯文件名,部署时 `LD_LIBRARY_PATH` 正常覆盖。该步骤已内置于 `scripts/build-cross.sh` (有 patchelf 则执行,无则警告)。
 

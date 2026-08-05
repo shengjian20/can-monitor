@@ -2,8 +2,8 @@
 # fetch-vendor.sh — 拷贝 USBCAN(controlcan) 供应商库到 third_party/controlcan/
 #
 # 来源: SDK "Linux资料包V1.45/二次开发库文件"
-#   - ARM平台/64bit/        → third_party/controlcan/           (aarch64)
-#   - x86平台/64位linux系统/ → third_party/controlcan/x86_64/   (x86_64)
+#   - ARM平台/64bit/        → third_party/controlcan/aarch64/  (aarch64)
+#   - x86平台/64位linux系统/ → third_party/controlcan/x86_64/  (x86_64)
 #   - controlcan.h          → third_party/controlcan/controlcan.h
 #
 # 注意: 树莓派/64bit 是 32 位 ARM 二进制, 不要使用。
@@ -27,10 +27,10 @@ for p in "$SDK/controlcan.h" "$ARM_DIR/libcontrolcan.a" "$ARM_DIR/libcontrolcan.
     fi
 done
 
-mkdir -p "$DEST/x86_64"
+mkdir -p "$DEST/aarch64" "$DEST/x86_64"
 
-cp "$ARM_DIR/libcontrolcan.a"  "$DEST/libcontrolcan.a"
-cp "$ARM_DIR/libcontrolcan.so" "$DEST/libcontrolcan.so"
+cp "$ARM_DIR/libcontrolcan.a"  "$DEST/aarch64/libcontrolcan.a"
+cp "$ARM_DIR/libcontrolcan.so" "$DEST/aarch64/libcontrolcan.so"
 cp "$SDK/controlcan.h"         "$DEST/controlcan.h"
 cp "$X86_DIR/libcontrolcan.a"  "$DEST/x86_64/libcontrolcan.a"
 cp "$X86_DIR/libcontrolcan.so" "$DEST/x86_64/libcontrolcan.so"
