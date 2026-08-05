@@ -8,28 +8,37 @@
 //!
 //! ## 快捷键
 //!
-//! | 按键       | 功能                       |
-//! |-----------|---------------------------|
-//! | `q`       | 退出                       |
-//! | 空格 / `s` | 切换监控开关                |
+//! | 按键            | 功能                    |
+//! |----------------|------------------------|
+//! | `q`            | 退出                    |
+//! | 空格 / `s`     | 切换监控开关             |
+//! | `f`            | 切换过滤开关             |
+//! | `l`            | 切换日志记录             |
+//! | `x`            | 打开 CANopen 下发面板    |
+//! | ↑ / ↓          | 滚动消息列表             |
+//! | PageUp/PageDown| 翻页                    |
+//! | End            | 跟随尾部 (最新帧)        |
 
 use std::collections::VecDeque;
 use std::io;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use can_types::{CanMessage, Direction};
+use can_types::CanMessage;
 use crossbeam_channel::Receiver;
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind};
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Style};
-use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
 use ratatui::Frame;
 
 use crate::bus::MonitorBus;
 use crate::classifier::FrameClassifier;
 use crate::filter::FrameFilter;
+use crate::logger::CandumpLogger;
+use crate::tui::send::SendPanel;
+use crate::tui::stream::MessageStream;
+use crate::tui::status::{render_status_bar, StatusBarData};
 
 /// 消息窗口最大帧数 (防内存泄漏)。
 const MAX_MESSAGES: usize = 1000;
@@ -58,6 +67,8 @@ pub struct App {
     err_rx: Receiver<String>,
     /// 帧过滤器。
     filter: FrameFilter,
+    /// 报文流列表组件 (Table 渲染 / 滚动 / 高亮)。
+    message_stream: MessageStream,
     /// 消息窗口 (环形缓冲, 最多 [`MAX_MESSAGES`] 帧)。
     messages: VecDeque<DisplayMessage>,
     /// 监控开关状态 (默认关闭)。
@@ -66,6 +77,16 @@ pub struct App {
     should_quit: bool,
     /// 最近一条错误信息。
     last_error: Option<String>,
+    /// 后端类型名称 (状态栏显示)。
+    backend_name: String,
+    /// 接口名 (状态栏显示)。
+    iface_name: String,
+    /// 日志记录器 (可选, 由 main 传入)。
+    logger: Option<CandumpLogger>,
+    /// 日志开关 (独立于监控开关)。
+    logging_enabled: bool,
+    /// CANopen 下发面板。
+    send_panel: SendPanel,
 }
 
 /// CLI 参数解析结果。
@@ -173,11 +194,45 @@ impl App {
             rx,
             err_rx,
             filter,
+            message_stream: MessageStream::new(),
             messages: VecDeque::with_capacity(MAX_MESSAGES),
             monitoring: false,
             should_quit: false,
             last_error: None,
+            backend_name: "None".to_string(),
+            iface_name: "can0".to_string(),
+            logger: None,
+            logging_enabled: false,
+            send_panel: SendPanel::new(),
         }
+    }
+
+    /// 设置后端类型名称 (状态栏显示)。
+    ///
+    /// @param name 后端名称 (如 "SocketCAN" / "USBCAN" / "None")。
+    /// @return `&mut self` 以便链式调用。
+    pub fn set_backend_name(&mut self, name: String) -> &mut Self {
+        self.backend_name = name;
+        self
+    }
+
+    /// 设置接口名 (状态栏显示)。
+    ///
+    /// @param iface 接口名 (如 "can0" / "vcan0")。
+    /// @return `&mut self` 以便链式调用。
+    pub fn set_iface_name(&mut self, iface: String) -> &mut Self {
+        self.iface_name = iface;
+        self
+    }
+
+    /// 挂载日志记录器 (由 main 在有 `--log-file` 时调用)。
+    ///
+    /// @param logger 已创建的 [`CandumpLogger`]。
+    /// @return `&mut self` 以便链式调用。
+    pub fn set_logger(&mut self, logger: CandumpLogger) -> &mut Self {
+        self.logger = Some(logger);
+        self.logging_enabled = true;
+        self
     }
 
     /// 运行 TUI 事件循环。
@@ -225,6 +280,23 @@ impl App {
             return;
         }
 
+        // 面板可见时, 所有按键路由到下发面板 (避免与主视图快捷键冲突)。
+        if self.send_panel.is_visible() {
+            self.send_panel.handle_key(key);
+            // 面板处于 FillFields 且按 Enter 后无错误, 尝试发送。
+            if self.send_panel.ready_to_send() {
+                let send_result = self.send_panel.try_send(|frame| {
+                    self.bus.send_frame(frame)
+                });
+                if send_result.is_ok() {
+                    self.send_panel.close();
+                } else if let Err(msg) = send_result {
+                    self.send_panel.show_error(msg);
+                }
+            }
+            return;
+        }
+
         match key.code {
             KeyCode::Char('q') => {
                 self.should_quit = true;
@@ -233,14 +305,55 @@ impl App {
                 self.monitoring = !self.monitoring;
                 self.bus.set_monitoring(self.monitoring);
             }
+            KeyCode::Char('f') => {
+                let enabled = self.filter.is_enabled();
+                self.filter.set_enabled(!enabled);
+            }
+            KeyCode::Char('l') => {
+                if self.logger.is_some() {
+                    self.logging_enabled = !self.logging_enabled;
+                    if let Some(ref mut logger) = self.logger {
+                        logger.set_enabled(self.logging_enabled);
+                        let _ = logger.flush();
+                    }
+                }
+            }
+            KeyCode::Char('x') => {
+                self.send_panel.open();
+            }
+            KeyCode::Up => {
+                self.message_stream.previous_row(self.messages.len());
+            }
+            KeyCode::Down => {
+                self.message_stream.next_row(self.messages.len());
+            }
+            KeyCode::PageUp => {
+                let page = 10;
+                self.message_stream.page_up(self.messages.len(), page);
+            }
+            KeyCode::PageDown => {
+                let page = 10;
+                self.message_stream.page_down(self.messages.len(), page);
+            }
+            KeyCode::End => {
+                self.message_stream.end(self.messages.len());
+            }
             _ => {}
         }
     }
 
     /// 从消息 channel 拉取所有待处理消息, 过滤后推入窗口。
+    ///
+    /// 若日志记录器已挂载且开启, 同步记录每帧到日志文件。
     fn drain_messages(&mut self) {
         while let Ok(msg) = self.rx.try_recv() {
-            // 使用 matches 过滤 (基于 ID 范围 + 方向)。
+            // 日志记录 (在过滤前, 记录原始帧)。
+            if let Some(ref mut logger) = self.logger {
+                if self.logging_enabled {
+                    let _ = logger.log_frame(&msg.frame, &self.iface_name);
+                }
+            }
+
             if !self.filter.matches(&msg) {
                 continue;
             }
@@ -277,7 +390,7 @@ impl App {
     /// - 帮助行: 1 行, 显示快捷键说明。
     ///
     /// @param frame ratatui 帧。
-    fn render(&self, frame: &mut Frame) {
+    fn render(&mut self, frame: &mut Frame) {
         let area = frame.area();
 
         // 三区垂直布局: 消息区 (Min) + 状态栏 (Length 3) + 帮助行 (Length 1)。
@@ -291,21 +404,23 @@ impl App {
         self.render_messages(frame, chunks[0]);
         self.render_status(frame, chunks[1]);
         self.render_help(frame, chunks[2]);
+
+        // 发送面板浮动渲染 (Hidden 时内部直接返回)。
+        self.send_panel.render(frame, area);
     }
 
     /// 渲染消息区。
     ///
-    /// 监控关闭时显示占位提示; 开启后显示消息列表。
+    /// 监控关闭时显示占位提示; 开启后用 [`MessageStream`] 渲染 Table。
     ///
     /// @param frame ratatui 帧。
     /// @param area  消息区矩形。
-    fn render_messages(&self, frame: &mut Frame, area: Rect) {
-        let block = Block::default()
-            .title("CAN 消息")
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(Color::DarkGray));
-
+    fn render_messages(&mut self, frame: &mut Frame, area: Rect) {
         if !self.monitoring {
+            let block = Block::default()
+                .title("CAN 消息")
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(Color::DarkGray));
             let placeholder = Paragraph::new("监控已关闭 — 按 SPACE 开始监控")
                 .block(block)
                 .style(Style::default().fg(Color::DarkGray));
@@ -313,85 +428,29 @@ impl App {
             return;
         }
 
-        if self.messages.is_empty() {
-            let waiting = Paragraph::new("等待消息...")
-                .block(block)
-                .style(Style::default().fg(Color::DarkGray));
-            frame.render_widget(waiting, area);
-            return;
-        }
-
-        // 构建消息行列表 (最新消息在上)。
-        let lines: Vec<Line> = self
-            .messages
-            .iter()
-            .rev()
-            .map(|msg| {
-                let id = msg.raw.frame.id();
-                let id_str = if id.is_extended() {
-                    format!("{:08X}", id.raw_id())
-                } else {
-                    format!("{:03X}", id.raw_id())
-                };
-                let data: String = msg
-                    .raw
-                    .frame
-                    .data()
-                    .iter()
-                    .map(|b| format!("{b:02X}"))
-                    .collect();
-                let dir = match msg.raw.direction {
-                    Direction::Rx => "Rx",
-                    Direction::Tx => "Tx",
-                };
-                Line::from(vec![
-                    Span::styled(format!("{id_str} "), Style::default().fg(Color::Yellow)),
-                    Span::styled(format!("{dir} "), Style::default().fg(Color::Cyan)),
-                    Span::raw(data),
-                ])
-            })
-            .collect();
-
-        let paragraph = Paragraph::new(lines).block(block);
-        frame.render_widget(paragraph, area);
+        let highlighter = self.filter.highlighter();
+        self.message_stream
+            .render(frame, area, self.messages.make_contiguous(), highlighter);
     }
 
-    /// 渲染状态栏。
+    /// 渲染状态栏 (使用 [`StatusBarData`] + [`render_status_bar`])。
     ///
     /// @param frame ratatui 帧。
     /// @param area  状态栏矩形。
     fn render_status(&self, frame: &mut Frame, area: Rect) {
-        let status_style = if self.monitoring {
-            Style::default().fg(Color::Green)
-        } else {
-            Style::default().fg(Color::Red)
+        let data = StatusBarData {
+            backend: &self.backend_name,
+            iface: &self.iface_name,
+            monitoring: self.monitoring,
+            total_frames: self.bus.total_frames(),
+            canopen_count: self.bus.canopen_count(),
+            j1939_count: self.bus.j1939_count(),
+            error_count: self.bus.error_count(),
+            filter_enabled: self.filter.is_enabled(),
+            logger_enabled: self.logger.as_ref().map(|l| l.is_enabled()),
+            last_error: self.last_error.as_deref(),
         };
-
-        let status_text = if self.monitoring {
-            "监控: ON"
-        } else {
-            "监控: OFF"
-        };
-
-        let total = self.bus.total_frames();
-        let canopen = self.bus.canopen_count();
-        let j1939 = self.bus.j1939_count();
-        let errors = self.bus.error_count();
-
-        let block = Block::default()
-            .title("状态")
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(Color::DarkGray));
-
-        let line = Line::from(vec![
-            Span::styled(format!("{status_text}  "), status_style),
-            Span::raw(format!(
-                "帧: {total}  CANopen: {canopen}  J1939: {j1939}  错误: {errors}"
-            )),
-        ]);
-
-        let paragraph = Paragraph::new(line).block(block);
-        frame.render_widget(paragraph, area);
+        render_status_bar(&data, frame, area);
     }
 
     /// 渲染帮助行。
@@ -399,7 +458,7 @@ impl App {
     /// @param frame ratatui 帧。
     /// @param area  帮助行矩形。
     fn render_help(&self, frame: &mut Frame, area: Rect) {
-        let help_text = "q:退出 SPACE/S:切换监控";
+        let help_text = "q:退出 SPACE/S:监控 f:过滤 l:日志 ↑↓:滚动 End:尾随 x:CANopen";
         let paragraph =
             Paragraph::new(help_text).style(Style::default().fg(Color::DarkGray));
         frame.render_widget(paragraph, area);
@@ -476,5 +535,118 @@ mod tests {
         let filter = FrameFilter::new();
         let app = App::new(bus, classifier, rx, err_rx, filter);
         assert!(!app.is_monitoring());
+    }
+
+    /// App::new 默认 logger = None, logging_enabled = false。
+    #[test]
+    fn app_default_no_logger() {
+        let (bus, rx, err_rx) = MonitorBus::new();
+        let classifier = Arc::new(Mutex::new(FrameClassifier::default()));
+        let filter = FrameFilter::new();
+        let app = App::new(bus, classifier, rx, err_rx, filter);
+        assert!(app.logger.is_none());
+        assert!(!app.logging_enabled);
+    }
+
+    /// App::new 默认后端名 "None", 接口 "can0"。
+    #[test]
+    fn app_default_backend_info() {
+        let (bus, rx, err_rx) = MonitorBus::new();
+        let classifier = Arc::new(Mutex::new(FrameClassifier::default()));
+        let filter = FrameFilter::new();
+        let app = App::new(bus, classifier, rx, err_rx, filter);
+        assert_eq!(app.backend_name, "None");
+        assert_eq!(app.iface_name, "can0");
+    }
+
+    /// set_backend_name / set_iface_name 设置后可查询。
+    #[test]
+    fn app_set_backend_and_iface() {
+        let (bus, rx, err_rx) = MonitorBus::new();
+        let classifier = Arc::new(Mutex::new(FrameClassifier::default()));
+        let filter = FrameFilter::new();
+        let mut app = App::new(bus, classifier, rx, err_rx, filter);
+        app.set_backend_name("SocketCAN".to_string());
+        app.set_iface_name("vcan0".to_string());
+        assert_eq!(app.backend_name, "SocketCAN");
+        assert_eq!(app.iface_name, "vcan0");
+    }
+
+    /// 'f' 键切换过滤开关。
+    #[test]
+    fn key_f_toggles_filter() {
+        let (bus, rx, err_rx) = MonitorBus::new();
+        let classifier = Arc::new(Mutex::new(FrameClassifier::default()));
+        let filter = FrameFilter::new();
+        let mut app = App::new(bus, classifier, rx, err_rx, filter);
+
+        // 初始: 过滤关闭。
+        assert!(!app.filter.is_enabled());
+
+        // 按 f: 过滤开启。
+        let key_f = KeyEvent::new(KeyCode::Char('f'), crossterm::event::KeyModifiers::NONE);
+        app.handle_key(key_f);
+        assert!(app.filter.is_enabled());
+
+        // 再按 f: 过滤关闭。
+        app.handle_key(KeyEvent::new(KeyCode::Char('f'), crossterm::event::KeyModifiers::NONE));
+        assert!(!app.filter.is_enabled());
+    }
+
+    /// 'l' 键无 logger 时无操作。
+    #[test]
+    fn key_l_no_logger_noop() {
+        let (bus, rx, err_rx) = MonitorBus::new();
+        let classifier = Arc::new(Mutex::new(FrameClassifier::default()));
+        let filter = FrameFilter::new();
+        let mut app = App::new(bus, classifier, rx, err_rx, filter);
+
+        let key_l = KeyEvent::new(KeyCode::Char('l'), crossterm::event::KeyModifiers::NONE);
+        app.handle_key(key_l);
+        // 无 panic, logging_enabled 仍为 false。
+        assert!(!app.logging_enabled);
+    }
+
+    /// 'l' 键有 logger 时切换日志开关。
+    #[test]
+    fn key_l_with_logger_toggles() {
+        let (bus, rx, err_rx) = MonitorBus::new();
+        let classifier = Arc::new(Mutex::new(FrameClassifier::default()));
+        let filter = FrameFilter::new();
+        let mut app = App::new(bus, classifier, rx, err_rx, filter);
+
+        // 挂载 logger (临时文件)。
+        let path = std::env::temp_dir().join(format!("test-{}-key_l.log", std::process::id()));
+        let logger = crate::logger::CandumpLogger::new(&path).unwrap();
+        app.set_logger(logger);
+        assert!(app.logging_enabled);
+
+        // 按 l: 关闭日志。
+        let key_l = KeyEvent::new(KeyCode::Char('l'), crossterm::event::KeyModifiers::NONE);
+        app.handle_key(key_l);
+        assert!(!app.logging_enabled);
+
+        // 再按 l: 开启日志。
+        app.handle_key(KeyEvent::new(KeyCode::Char('l'), crossterm::event::KeyModifiers::NONE));
+        assert!(app.logging_enabled);
+
+        // 清理。
+        if let Some(ref mut logger) = app.logger {
+            let _ = logger.close();
+        }
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// 'x' 键不 panic (占位)。
+    #[test]
+    fn key_x_no_panic() {
+        let (bus, rx, err_rx) = MonitorBus::new();
+        let classifier = Arc::new(Mutex::new(FrameClassifier::default()));
+        let filter = FrameFilter::new();
+        let mut app = App::new(bus, classifier, rx, err_rx, filter);
+
+        let key_x = KeyEvent::new(KeyCode::Char('x'), crossterm::event::KeyModifiers::NONE);
+        app.handle_key(key_x);
+        // 不 panic 即可。
     }
 }

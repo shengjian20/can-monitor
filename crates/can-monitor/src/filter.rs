@@ -53,6 +53,8 @@ pub struct FrameFilter {
     direction: Option<Direction>,
     /// 总开关, `false` 时全部通过。
     enabled: bool,
+    /// 高亮引擎 (管理 ID / 协议高亮规则)。
+    highlighter: Highlighter,
 }
 
 impl Default for FrameFilter {
@@ -72,6 +74,7 @@ impl FrameFilter {
             protocol: None,
             direction: None,
             enabled: false,
+            highlighter: Highlighter::new(),
         }
     }
 
@@ -168,6 +171,20 @@ impl FrameFilter {
     /// @return `true` 表示过滤启用。
     pub fn is_enabled(&self) -> bool {
         self.enabled
+    }
+
+    /// 获取高亮引擎引用。
+    ///
+    /// @return 高亮引擎。
+    pub fn highlighter(&self) -> &Highlighter {
+        &self.highlighter
+    }
+
+    /// 获取高亮引擎可变引用。
+    ///
+    /// @return 可变高亮引擎。
+    pub fn highlighter_mut(&mut self) -> &mut Highlighter {
+        &mut self.highlighter
     }
 
     /// 判断一条统一消息是否通过过滤。

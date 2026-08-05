@@ -10,6 +10,7 @@ use can_types::{BackendConfig, BackendKind, CanBackend};
 use can_monitor::bus::MonitorBus;
 use can_monitor::classifier::FrameClassifier;
 use can_monitor::filter::FrameFilter;
+use can_monitor::logger::CandumpLogger;
 use can_monitor::tui::app::{parse_args, App};
 
 fn main() {
@@ -28,8 +29,9 @@ fn run(cli: can_monitor::tui::app::CliArgs) -> Result<(), Box<dyn std::error::Er
     let (bus, rx, err_rx) = MonitorBus::new();
     let classifier = Arc::new(Mutex::new(FrameClassifier::default()));
 
-    match cli.backend.as_str() {
+    let (backend_name, iface_name) = match cli.backend.as_str() {
         "socketcan" => {
+            let iface = cli.iface.clone();
             let config = BackendConfig::SocketCan {
                 iface: cli.iface,
                 fd: cli.fd,
@@ -37,6 +39,7 @@ fn run(cli: can_monitor::tui::app::CliArgs) -> Result<(), Box<dyn std::error::Er
             let backend = can_socketcan::SocketCanBackend::open(&config)
                 .map_err(|e| format!("打开 SocketCAN 后端失败: {e}"))?;
             bus.start_reader(backend, Arc::clone(&classifier), BackendKind::SocketCan);
+            ("SocketCAN".to_string(), iface)
         }
         "usbvci" => {
             let config = BackendConfig::UsbVci {
@@ -46,22 +49,28 @@ fn run(cli: can_monitor::tui::app::CliArgs) -> Result<(), Box<dyn std::error::Er
             let backend = can_usbvci::UsbVciBackend::open(&config)
                 .map_err(|e| format!("打开 USBCAN 后端失败: {e}"))?;
             bus.start_reader(backend, Arc::clone(&classifier), BackendKind::UsbVci);
+            ("USBCAN".to_string(), cli.iface)
         }
         "none" => {
-            // 测试模式: 不启动 reader, TUI 直接可用。
+            ("None".to_string(), cli.iface)
         }
         other => {
             return Err(format!("未知后端: {other} (可选: socketcan, usbvci, none)").into());
         }
-    }
-
-    // 日志文件 (可选, Task 13 已实现 logger, 此处预留接口)。
-    if let Some(_log_path) = &cli.log_file {
-        // TODO: 接入 CandumpLogger (Task 20 集成)。
-    }
+    };
 
     let filter = FrameFilter::new();
     let mut app = App::new(bus, classifier, rx, err_rx, filter);
+    app.set_backend_name(backend_name);
+    app.set_iface_name(iface_name);
+
+    if let Some(log_path) = &cli.log_file {
+        let path = std::path::Path::new(log_path);
+        let logger = CandumpLogger::new(path)
+            .map_err(|e| format!("打开日志文件失败: {e}"))?;
+        app.set_logger(logger);
+    }
+
     app.run()?;
 
     Ok(())

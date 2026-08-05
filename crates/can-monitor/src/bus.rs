@@ -14,7 +14,7 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
-use can_types::{BackendKind, CanBackend, CanError, CanMessage, Direction};
+use can_types::{BackendKind, CanBackend, CanError, CanFrame, CanMessage, Direction};
 use crossbeam_channel::{Receiver, Sender};
 
 use crate::classifier::{FrameClassifier, ParsedMessage};
@@ -23,6 +23,8 @@ use crate::classifier::{FrameClassifier, ParsedMessage};
 const CHANNEL_CAPACITY: usize = 1024;
 /// 错误 channel 容量。
 const ERROR_CHANNEL_CAPACITY: usize = 64;
+/// 发送 channel 容量 (帧下发队列)。
+const SEND_CHANNEL_CAPACITY: usize = 64;
 /// reader 单次读帧阻塞上限。
 const READ_TIMEOUT: Duration = Duration::from_millis(100);
 /// 监控关闭时线程轮询开关的休眠间隔。
@@ -42,6 +44,10 @@ pub struct MonitorBus {
     _rx: Receiver<CanMessage>,
     /// 错误投递发送端。
     err_tx: Sender<String>,
+    /// 帧发送端 (TUI 下发面板 → reader 线程 → 后端写入)。
+    send_tx: Sender<CanFrame>,
+    /// 帧发送接收端 (reader 线程消费)。
+    send_rx: Receiver<CanFrame>,
     /// 监控开关 (默认关闭)。
     running: Arc<AtomicBool>,
     /// 线程停机标志 (置真后 reader 线程退出)。
@@ -66,11 +72,14 @@ impl MonitorBus {
     pub fn new() -> (MonitorBus, Receiver<CanMessage>, Receiver<String>) {
         let (tx, rx) = crossbeam_channel::bounded(CHANNEL_CAPACITY);
         let (err_tx, err_rx) = crossbeam_channel::bounded(ERROR_CHANNEL_CAPACITY);
+        let (send_tx, send_rx) = crossbeam_channel::bounded(SEND_CHANNEL_CAPACITY);
         (
             MonitorBus {
                 tx,
                 _rx: rx.clone(),
                 err_tx,
+                send_tx,
+                send_rx,
                 running: Arc::new(AtomicBool::new(false)),
                 shutdown: Arc::new(AtomicBool::new(false)),
                 total_frames: Arc::new(AtomicU64::new(0)),
@@ -108,6 +117,7 @@ impl MonitorBus {
     {
         let tx = self.tx.clone();
         let err_tx = self.err_tx.clone();
+        let send_rx = self.send_rx.clone();
         let running = Arc::clone(&self.running);
         let shutdown = Arc::clone(&self.shutdown);
         let total = Arc::clone(&self.total_frames);
@@ -120,6 +130,13 @@ impl MonitorBus {
             .spawn(move || {
                 let mut backend = backend;
                 while !shutdown.load(Ordering::Relaxed) {
+                    // Drain send channel.
+                    while let Ok(frame) = send_rx.try_recv() {
+                        if let Err(e) = backend.write_frame(&frame) {
+                            errors.fetch_add(1, Ordering::Relaxed);
+                            let _ = err_tx.try_send(format!("发送帧失败: {e}"));
+                        }
+                    }
                     if !running.load(Ordering::Relaxed) {
                         // 监控关闭: 休眠等待, 不消费后端帧。
                         thread::sleep(POLL_INTERVAL);
@@ -206,6 +223,19 @@ impl MonitorBus {
     /// @return 读取后端时发生非超时错误的次数。
     pub fn error_count(&self) -> u64 {
         self.error_count.load(Ordering::Relaxed)
+    }
+
+    /// 向总线发送一帧 (TUI 下发面板调用)。
+    ///
+    /// 帧通过 channel 投递到 reader 线程, 由 reader 调用后端写入; channel 满时
+    /// 返回错误 (非阻塞)。
+    ///
+    /// @param frame 待发送的 CAN 帧。
+    /// @return 成功 `Ok(())`; channel 满或已关闭返回错误描述。
+    pub fn send_frame(&self, frame: CanFrame) -> std::result::Result<(), String> {
+        self.send_tx
+            .try_send(frame)
+            .map_err(|e| format!("发送队列: {e}"))
     }
 }
 

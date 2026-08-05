@@ -10,3 +10,12 @@
 
 /// TUI 应用主结构与事件循环。
 pub mod app;
+
+/// CANopen 下发面板 (NMT / SDO 读写 / 原始帧)。
+pub mod send;
+
+/// 状态栏纯渲染组件 (计划任务 17)。
+pub mod status;
+
+/// 报文流列表组件 (Table 渲染 / 滚动 / 高亮)。
+pub mod stream;
