@@ -4,8 +4,12 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-socketcan = { version = "=3.6.2", default-features = false }
 can-types = { path = "../can-types" }
+
+# socketcan 封装 Linux AF_CAN syscall,仅在 Linux 编译 (见 src/lib.rs 平台说明);
+# 其他平台走 src/stub.rs 降级模块,不拉取本依赖
+[target.'cfg(target_os = "linux")'.dependencies]
+socketcan = { version = "=3.6.2", default-features = false }
 
 [features]
 # vcan 集成测试 (需要本机存在 vcan0 / root 权限创建 vcan 接口,默认关闭)
