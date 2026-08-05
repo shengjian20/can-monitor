@@ -46,6 +46,7 @@ fn run(cli: CliArgs) -> Result<(), Box<dyn std::error::Error>> {
         "usbvci" => {
             let config = BackendConfig::UsbVci {
                 device_type: can_usbvci::VCI_USBCAN2,
+                device_index: 0,
                 channel: 0,
             };
             let backend = can_usbvci::UsbVciBackend::open(&config)

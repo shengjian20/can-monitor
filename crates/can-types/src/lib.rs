@@ -10,6 +10,7 @@
 //! - [`BackendConfig`] / [`BackendKind`] : 后端配置与后端种类
 //! - [`CanMessage`] / [`FrameSource`] : 统一消息与帧来源抽象
 //! - [`CanBackend`] : 所有具体后端必须实现的底层 trait
+//! - [`CanDeviceInfo`] / [`DeviceDiscoverer`] : 设备发现抽象 (设备列表 / 动态加载)
 //!
 //! 仅依赖标准库 (`std`)。
 
@@ -377,11 +378,14 @@ pub enum BackendConfig {
     },
     /// USBCAN (VCI) 后端。
     ///
-    /// @param device_type 设备类型 (厂商定义的 USBCAN 设备类型码)。
-    /// @param channel     通道号 (0 / 1)。
+    /// @param device_type  设备类型 (厂商定义的 USBCAN 设备类型码)。
+    /// @param device_index 设备索引 (0 起, 区分同一类型的多台设备)。
+    /// @param channel      通道号 (0 / 1)。
     UsbVci {
         /// USBCAN 设备类型码。
         device_type: u32,
+        /// 设备索引 (0 起; 同类型多台设备时用于区分, 默认 0)。
+        device_index: u32,
         /// 通道号。
         channel: u32,
     },
@@ -461,6 +465,78 @@ pub trait CanBackend {
     ///
     /// @return 成功返回 `Ok(())`;关闭过程出错返回相应 [`CanError`]。
     fn close(&mut self) -> Result<()>;
+}
+
+/// 设备种类。
+///
+/// 描述一台被发现设备所属的后端种类,便于上层对设备列表统一分类展示与路由。
+/// 预留 `Other` 变体作为扩展点,未来接入新后端时无需破坏既有穷举匹配。
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum DeviceKind {
+    /// Linux SocketCAN (vcan / can 网络接口)。
+    SocketCan,
+    /// USBCAN (VCI) 设备。
+    UsbVci,
+    /// 其他自定义后端种类。
+    Other(String),
+}
+
+/// 设备详情。
+///
+/// 携带设备型号等附加信息,由后端在发现时填充;字段可随后端能力扩展。
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct DeviceDetails {
+    /// 设备型号字符串 (如 `VCI_BOARD_INFO.str_hw_Type` 的型号文本)。
+    pub model: String,
+}
+
+impl DeviceDetails {
+    /// 构造不含附加信息的空设备详情。
+    ///
+    /// @return 空 [`DeviceDetails`]。
+    pub fn new() -> Self {
+        DeviceDetails::default()
+    }
+
+    /// 构造带型号字符串的设备详情。
+    ///
+    /// @param model 设备型号文本 (如 `VCI_BOARD_INFO.str_hw_Type`)。
+    /// @return 携带指定型号的 [`DeviceDetails`]。
+    pub fn with_model(model: impl Into<String>) -> Self {
+        DeviceDetails {
+            model: model.into(),
+        }
+    }
+}
+
+/// 设备信息。
+///
+/// 设备发现的结果条目,描述一台可被后端识别的 CAN 设备。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CanDeviceInfo {
+    /// 设备唯一标识 (如 SocketCAN 接口名 / VCI 设备序号)。
+    pub id: String,
+    /// 面向用户的设备显示名称。
+    pub name: String,
+    /// 设备种类。
+    pub kind: DeviceKind,
+    /// 后端驱动标识 (如后端 crate 名)。
+    pub driver: String,
+    /// 设备附加详情 (型号等)。
+    pub details: DeviceDetails,
+    /// 设备当前是否可用 (已连接且可打开)。
+    pub available: bool,
+}
+
+/// 设备发现抽象。
+///
+/// 任何能够枚举当前可用设备的后端都实现该 trait,供上层 (设备列表 /
+/// 动态加载 / 设备管理) 统一调用;空列表表示当前无可发现设备。
+pub trait DeviceDiscoverer {
+    /// 枚举当前可发现的设备。
+    ///
+    /// @return 当前可发现的设备列表;未接入后端时返回空列表。
+    fn list_devices() -> Vec<CanDeviceInfo>;
 }
 
 #[cfg(test)]

@@ -281,7 +281,7 @@ impl VciOps for RealVciOps {
 pub struct UsbVciBackend {
     /// 设备类型码 (如 `VCI_USBCAN2`)。
     device_type: u32,
-    /// 设备索引号 (固定 0)。
+    /// 设备索引号 (0 起, 区分同一类型的多台设备)。
     device_ind: u32,
     /// CAN 通道号 (0 / 1)。
     channel: u32,
@@ -304,6 +304,7 @@ impl UsbVciBackend {
     /// 并通过缩小 `reconnect_delay` / `reconnect_attempts` 加速热插拔场景。
     ///
     /// @param device_type      设备类型码。
+    /// @param device_index     设备索引 (0 起)。
     /// @param channel          通道号。
     /// @param ops              VCI 调用抽象。
     /// @param reconnect_delay  重连等待时长。
@@ -312,6 +313,7 @@ impl UsbVciBackend {
     #[cfg(any(not(feature = "mock"), test))]
     pub(crate) fn new_with(
         device_type: u32,
+        device_index: u32,
         channel: u32,
         ops: Box<dyn VciOps>,
         reconnect_delay: Duration,
@@ -319,7 +321,7 @@ impl UsbVciBackend {
     ) -> Self {
         Self {
             device_type,
-            device_ind: 0,
+            device_ind: device_index,
             channel,
             ops,
             vci_mutex: Mutex::new(()),
@@ -402,18 +404,19 @@ impl UsbVciBackend {
 impl CanBackend for UsbVciBackend {
     /// 按配置打开 USBCAN 后端。
     ///
-    /// 固定以 `VCI_USBCAN2` + 通道 `channel` 打开, 执行完整初始化
+    /// 以配置的 `device_type` / `device_index` / `channel` 打开, 执行完整初始化
     /// (OpenDevice → InitCAN → StartCAN), 500kbps 波特率。
     ///
     /// @param config 后端配置, 仅支持 [`BackendConfig::UsbVci`]。
     /// @return 成功返回已打开的 [`UsbVciBackend`]; 配置不是 UsbVci 返回
     ///         [`CanError::Unsupported`], 打开/初始化失败返回对应 [`CanError`]。
     fn open(config: &BackendConfig) -> Result<Self> {
-        let (device_type, channel) = match config {
+        let (device_type, device_index, channel) = match config {
             BackendConfig::UsbVci {
                 device_type,
+                device_index,
                 channel,
-            } => (*device_type, *channel),
+            } => (*device_type, *device_index, *channel),
             BackendConfig::SocketCan { .. } => {
                 return Err(CanError::Unsupported("SocketCAN 配置不适用于 USBCAN 后端"));
             }
@@ -424,6 +427,7 @@ impl CanBackend for UsbVciBackend {
         {
             let backend = Self::new_with(
                 device_type,
+                device_index,
                 channel,
                 Box::new(RealVciOps),
                 RECONNECT_DELAY,
@@ -434,7 +438,7 @@ impl CanBackend for UsbVciBackend {
         }
         #[cfg(feature = "mock")]
         {
-            let _ = (device_type, channel);
+            let _ = (device_type, device_index, channel);
             Err(CanError::Unsupported(
                 "mock feature 下不可打开真实 USBCAN 设备 (测试请经 new_with 注入 MockVciOps)",
             ))
@@ -836,8 +840,14 @@ mod mock_tests {
         let ops = MockVciOps {
             state: device.clone(),
         };
-        let backend =
-            UsbVciBackend::new_with(crate::ffi::VCI_USBCAN2, 0, Box::new(ops), delay, attempts);
+        let backend = UsbVciBackend::new_with(
+            crate::ffi::VCI_USBCAN2,
+            0,
+            0,
+            Box::new(ops),
+            delay,
+            attempts,
+        );
         (backend, device)
     }
 
