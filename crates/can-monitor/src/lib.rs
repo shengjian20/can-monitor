@@ -3,7 +3,7 @@
 //! 提供监控主程序的可复用库部分。当前包含:
 //! - [`classifier`] : 帧分类器, 将原始帧分发到 CANopen / J1939 协议栈;
 //! - [`bus`] : 消息总线, 后台 reader 线程 + 有界 channel 数据通路;
-//! - [`logger`] : candump -L 兼容的 CAN 帧日志记录器 (计划任务 13)。
+//! - [`logger`] : candump -L 兼容的 CAN 帧日志记录器。
 //!
 //! ## 核心数据流
 //!

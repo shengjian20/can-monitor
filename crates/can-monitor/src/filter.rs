@@ -1,18 +1,25 @@
 //! # 帧过滤引擎
 //!
-//! 在帧分类**之后**对 [`ParsedMessage`] 进行筛选与高亮, 提供:
+//! 在帧分类**之后**对 [`ParsedMessage`](crate::classifier::ParsedMessage)
+//! 进行筛选与高亮, 提供:
 //!
-//! - [`FrameFilter`]: 按 ID 范围 / 协议类型 / 收发方向组合过滤;
-//! - [`HighlightRule`] 与 [`Highlighter`]: 按 ID 或协议命中高亮规则, 返回
-//!   UI 无关的 [`HighlightStyle`] 枚举, 由 TUI 层 (任务 16) 映射到 ratatui
-//!   颜色。
+//! - [`FrameFilter`](crate::filter::FrameFilter): 按 ID 范围 / 协议类型 / 收发方向组合过滤;
+//! - [`HighlightRule`](crate::filter::HighlightRule) 与 [`Highlighter`](crate::filter::Highlighter):
+//!   按 ID 或协议命中高亮规则, 返回
+//!   UI 无关的 [`HighlightStyle`](crate::filter::HighlightStyle) 枚举, 由 TUI 层
+//!   映射到 ratatui 颜色。
 //!
 //! ## 设计要点
 //!
-//! - **过滤在分类后**: 协议条件依赖 [`ParsedMessage::protocol`], 因此推荐
-//!   用 [`FrameFilter::matches_parsed`]; 仅持有原始帧/消息时可用
-//!   [`FrameFilter::matches_frame`] 与 [`FrameFilter::matches`]。
-//! - **UI 依赖隔离**: 本模块不引用 ratatui, 颜色以 [`HighlightStyle`] 枚举
+//! - **过滤在分类后**: 协议条件依赖
+//!   [`ParsedMessage::protocol`](crate::classifier::ParsedMessage::protocol),
+//!   因此推荐用
+//!   [`FrameFilter::matches_parsed`](crate::filter::FrameFilter::matches_parsed);
+//!   仅持有原始帧/消息时可用
+//!   [`FrameFilter::matches_frame`](crate::filter::FrameFilter::matches_frame)
+//!   与 [`FrameFilter::matches`](crate::filter::FrameFilter::matches)。
+//! - **UI 依赖隔离**: 本模块不引用 ratatui, 颜色以
+//!   [`HighlightStyle`](crate::filter::HighlightStyle) 枚举
 //!   表达, 避免过滤引擎与终端渲染耦合。
 //! - **简单条件组合**: 各条件之间为 AND 关系, 不做复杂 DSL。
 
@@ -22,7 +29,7 @@ use crate::classifier::{ParsedMessage, Protocol};
 
 /// 高亮样式 (UI 无关的简化表示)。
 ///
-/// 不直接依赖 ratatui, 由 TUI 层 (任务 16) 将每个变体映射为具体颜色。
+/// 不直接依赖 ratatui, 由 TUI 层将每个变体映射为具体颜色。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HighlightStyle {
     /// 无高亮 (默认样式)。
@@ -39,10 +46,8 @@ pub enum HighlightStyle {
 
 /// 帧过滤条件集合。
 ///
-/// 各条件之间为 **AND** 关系: 只有同时满足所有已设置条件 (且 [`enabled`] 为
+/// 各条件之间为 **AND** 关系: 只有同时满足所有已设置条件 (且 `enabled` 为
 /// `true`) 的帧才通过过滤。未设置的条件 (字段为 `None`) 视为不限制。
-///
-/// [`enabled`]: FrameFilter::enabled
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FrameFilter {
     /// ID 起始-结束范围 (含边界), `None` = 不过滤。
@@ -504,10 +509,7 @@ mod tests {
         f.set_enabled(true).set_protocol(Protocol::Canopen);
         assert!(f.matches_parsed(&parsed_canopen(0x181)));
         assert!(!f.matches_parsed(&parsed(Protocol::Raw, frame(0x181, &[1]))));
-        assert!(!f.matches_parsed(&parsed(
-            Protocol::J1939,
-            frame_ext(0x18FEF100, &[1])
-        )));
+        assert!(!f.matches_parsed(&parsed(Protocol::J1939, frame_ext(0x18FEF100, &[1]))));
     }
 
     /// 方向过滤: Rx 只匹配 Rx 消息。
@@ -523,7 +525,9 @@ mod tests {
     #[test]
     fn combined_id_range_and_protocol() {
         let mut f = FrameFilter::new();
-        f.set_enabled(true).set_id_range(0x180, 0x1FF).set_protocol(Protocol::Canopen);
+        f.set_enabled(true)
+            .set_id_range(0x180, 0x1FF)
+            .set_protocol(Protocol::Canopen);
         // ID 与协议均匹配。
         assert!(f.matches_parsed(&parsed_canopen(0x181)));
         // ID 命中但协议不匹配。
@@ -555,9 +559,15 @@ mod tests {
     #[test]
     fn highlight_id_rule_style() {
         let rule = HighlightRule::new(HighlightStyle::Yellow).with_id(0x181);
-        assert_eq!(rule.highlight_for(&parsed_canopen(0x181)), HighlightStyle::Yellow);
+        assert_eq!(
+            rule.highlight_for(&parsed_canopen(0x181)),
+            HighlightStyle::Yellow
+        );
         // 非命中 ID → Default。
-        assert_eq!(rule.highlight_for(&parsed_canopen(0x182)), HighlightStyle::Default);
+        assert_eq!(
+            rule.highlight_for(&parsed_canopen(0x182)),
+            HighlightStyle::Default
+        );
     }
 
     /// 高亮: 协议命中规则返回对应样式。
@@ -567,7 +577,10 @@ mod tests {
         let j1939 = parsed(Protocol::J1939, frame_ext(0x18FEF100, &[1]));
         assert_eq!(rule.highlight_for(&j1939), HighlightStyle::Green);
         // 非命中协议 → Default。
-        assert_eq!(rule.highlight_for(&parsed_canopen(0x181)), HighlightStyle::Default);
+        assert_eq!(
+            rule.highlight_for(&parsed_canopen(0x181)),
+            HighlightStyle::Default
+        );
     }
 
     /// 高亮引擎: 先命中者优先, 全部未命中 → Default。
@@ -577,11 +590,17 @@ mod tests {
         h.add(HighlightRule::new(HighlightStyle::Cyan).with_id(0x181))
             .add(HighlightRule::new(HighlightStyle::Red).with_protocol(Protocol::Canopen));
         // 第一条 (ID 0x181) 命中, Cyan 优先于协议规则。
-        assert_eq!(h.highlight_for(&parsed_canopen(0x181)), HighlightStyle::Cyan);
+        assert_eq!(
+            h.highlight_for(&parsed_canopen(0x181)),
+            HighlightStyle::Cyan
+        );
         // 第一条未命中, 协议规则生效。
         assert_eq!(h.highlight_for(&parsed_canopen(0x182)), HighlightStyle::Red);
         // 全部未命中 → Default。
-        assert_eq!(h.highlight_for(&parsed(Protocol::Raw, frame(0x080, &[1]))), HighlightStyle::Default);
+        assert_eq!(
+            h.highlight_for(&parsed(Protocol::Raw, frame(0x080, &[1]))),
+            HighlightStyle::Default
+        );
         assert!(h.rules().len() == 2);
     }
 
@@ -589,7 +608,10 @@ mod tests {
     #[test]
     fn rule_without_conditions_never_matches() {
         let rule = HighlightRule::new(HighlightStyle::Red);
-        assert_eq!(rule.highlight_for(&parsed_canopen(0x181)), HighlightStyle::Default);
+        assert_eq!(
+            rule.highlight_for(&parsed_canopen(0x181)),
+            HighlightStyle::Default
+        );
         assert!(!rule.matches(&parsed_canopen(0x181)));
     }
 }

@@ -157,6 +157,15 @@ impl SelectField {
         self.index = (self.index + 1) % self.count;
     }
 
+    /// 直接跳转到指定选项 (越界值忽略, 保持当前索引)。
+    ///
+    /// @param index 目标选项索引。
+    pub fn set(&mut self, index: usize) {
+        if index < self.count {
+            self.index = index;
+        }
+    }
+
     /// 获取当前选中索引。
     ///
     /// @return 选项索引。
@@ -267,7 +276,10 @@ impl SendPanel {
     ///
     /// @param send 发送闭包 (接受 CanFrame, 返回 Result)。
     /// @return 成功 `Ok(())`; 验证或发送失败 `Err(msg)`。
-    pub fn try_send(&self, send: impl FnOnce(CanFrame) -> Result<(), String>) -> Result<(), String> {
+    pub fn try_send(
+        &self,
+        send: impl FnOnce(CanFrame) -> Result<(), String>,
+    ) -> Result<(), String> {
         let frame = build_frame(self.service_type, &self.nmt_cmd, &self.fields)?;
         send(frame)
     }
@@ -371,14 +383,14 @@ impl SendPanel {
                 self.error = None;
                 true
             }
-            KeyCode::Char(c) if is_hex_char(c) => {
+            KeyCode::Char(c) if c.is_ascii_hexdigit() => {
                 if self.service_type == ServiceType::Nmt {
                     if self.active_field == 0 {
                         // 命令槽: 数字 1-5 选择 NMT 命令。
                         if let Some(d) = c.to_digit(10) {
                             let d = d as usize;
                             if d >= 1 && d <= NMT_OPTIONS.len() {
-                                self.nmt_cmd.index = d - 1;
+                                self.nmt_cmd.set(d - 1);
                             }
                         }
                     } else if let Some(f) = self.fields.get_mut(self.active_field - 1) {
@@ -547,6 +559,7 @@ impl SendPanel {
     }
 }
 
+/// 默认构造: 隐藏状态的下发面板, 等价于 [`SendPanel::new`]。
 impl Default for SendPanel {
     fn default() -> Self {
         Self::new()
@@ -628,11 +641,6 @@ pub fn build_frame(
     }
 }
 
-/// 判断字符是否为合法十六进制输入 (0-9, a-f, A-F)。
-pub fn is_hex_char(c: char) -> bool {
-    c.is_ascii_hexdigit()
-}
-
 /// 从文本字段解析节点号 (十进制 1-127)。
 pub fn parse_node_id(field: &TextField) -> Result<u8, String> {
     let s = field.as_str().trim();
@@ -648,37 +656,61 @@ pub fn parse_node_id(field: &TextField) -> Result<u8, String> {
     Ok(val)
 }
 
-/// 从文本字段解析 u16 十六进制值 (支持 `0x` 前缀)。
-pub fn parse_hex_u16(field: &TextField, name: &str) -> Result<u16, String> {
+/// 支持按基数解析的整数类型 (内部 trait, 供 [`parse_hex_u`] 使用)。
+trait FromStrRadix: Sized {
+    /// 按指定基数解析字符串。
+    fn from_str_radix(src: &str, radix: u32) -> Result<Self, std::num::ParseIntError>;
+}
+
+impl FromStrRadix for u8 {
+    fn from_str_radix(src: &str, radix: u32) -> Result<Self, std::num::ParseIntError> {
+        u8::from_str_radix(src, radix)
+    }
+}
+
+impl FromStrRadix for u16 {
+    fn from_str_radix(src: &str, radix: u32) -> Result<Self, std::num::ParseIntError> {
+        u16::from_str_radix(src, radix)
+    }
+}
+
+impl FromStrRadix for u32 {
+    fn from_str_radix(src: &str, radix: u32) -> Result<Self, std::num::ParseIntError> {
+        u32::from_str_radix(src, radix)
+    }
+}
+
+/// 从文本字段解析十六进制整数值 (支持 `0x`/`0X` 前缀)。
+///
+/// 通用整数类型 (u8/u16/u32 等) 均可用; 值超出目标类型范围返回错误。
+/// 内部辅助函数, 公共入口为 [`parse_hex_u16`] / [`parse_hex_u8`] / [`parse_hex_u32`]。
+///
+/// @param field 文本输入字段。
+/// @param name  字段名 (用于错误消息)。
+/// @return 解析后的十六进制值; 空值或非法字符返回错误描述。
+fn parse_hex_u<T: FromStrRadix>(field: &TextField, name: &str) -> Result<T, String> {
     let s = field.as_str().trim();
     if s.is_empty() {
         return Err(format!("{name}不能为空"));
     }
     let stripped = s.strip_prefix("0x").or_else(|| s.strip_prefix("0X"));
     let hex_str = stripped.unwrap_or(s);
-    u16::from_str_radix(hex_str, 16).map_err(|_| format!("{name} '{}' 不是有效十六进制", s))
+    T::from_str_radix(hex_str, 16).map_err(|_| format!("{name} '{}' 不是有效十六进制", s))
+}
+
+/// 从文本字段解析 u16 十六进制值 (支持 `0x` 前缀)。
+pub fn parse_hex_u16(field: &TextField, name: &str) -> Result<u16, String> {
+    parse_hex_u(field, name)
 }
 
 /// 从文本字段解析 u8 十六进制值 (支持 `0x` 前缀)。
 pub fn parse_hex_u8(field: &TextField, name: &str) -> Result<u8, String> {
-    let s = field.as_str().trim();
-    if s.is_empty() {
-        return Err(format!("{name}不能为空"));
-    }
-    let stripped = s.strip_prefix("0x").or_else(|| s.strip_prefix("0X"));
-    let hex_str = stripped.unwrap_or(s);
-    u8::from_str_radix(hex_str, 16).map_err(|_| format!("{name} '{}' 不是有效十六进制", s))
+    parse_hex_u(field, name)
 }
 
 /// 从文本字段解析 u32 十六进制值 (支持 `0x` 前缀)。
 pub fn parse_hex_u32(field: &TextField, name: &str) -> Result<u32, String> {
-    let s = field.as_str().trim();
-    if s.is_empty() {
-        return Err(format!("{name}不能为空"));
-    }
-    let stripped = s.strip_prefix("0x").or_else(|| s.strip_prefix("0X"));
-    let hex_str = stripped.unwrap_or(s);
-    u32::from_str_radix(hex_str, 16).map_err(|_| format!("{name} '{}' 不是有效十六进制", s))
+    parse_hex_u(field, name)
 }
 
 /// 从文本字段解析十六进制字节序列 (连续 hex 字符, 如 "01020A")。
@@ -777,7 +809,10 @@ mod tests {
         for c in "01020A0B".chars() {
             f.push(c);
         }
-        assert_eq!(parse_hex_bytes(&f, "数据").unwrap(), vec![0x01, 0x02, 0x0A, 0x0B]);
+        assert_eq!(
+            parse_hex_bytes(&f, "数据").unwrap(),
+            vec![0x01, 0x02, 0x0A, 0x0B]
+        );
     }
 
     #[test]
@@ -938,12 +973,7 @@ mod tests {
         }
         panel.fields[2].push('0');
 
-        let frame = build_frame(
-            panel.service_type,
-            &panel.nmt_cmd,
-            &panel.fields,
-        )
-        .unwrap();
+        let frame = build_frame(panel.service_type, &panel.nmt_cmd, &panel.fields).unwrap();
         assert_eq!(frame.id().raw_id(), 0x605);
         assert_eq!(frame.data(), &[0x40, 0x17, 0x10, 0x00, 0, 0, 0, 0]);
     }
@@ -963,14 +993,12 @@ mod tests {
             panel.fields[3].push(c);
         }
 
-        let frame = build_frame(
-            panel.service_type,
-            &panel.nmt_cmd,
-            &panel.fields,
-        )
-        .unwrap();
+        let frame = build_frame(panel.service_type, &panel.nmt_cmd, &panel.fields).unwrap();
         assert_eq!(frame.id().raw_id(), 0x601);
-        assert_eq!(frame.data(), &[0x2B, 0x10, 0x20, 0x00, 0x01, 0x02, 0x00, 0x00]);
+        assert_eq!(
+            frame.data(),
+            &[0x2B, 0x10, 0x20, 0x00, 0x01, 0x02, 0x00, 0x00]
+        );
     }
 
     #[test]
@@ -986,12 +1014,7 @@ mod tests {
             panel.fields[1].push(c);
         }
 
-        let frame = build_frame(
-            panel.service_type,
-            &panel.nmt_cmd,
-            &panel.fields,
-        )
-        .unwrap();
+        let frame = build_frame(panel.service_type, &panel.nmt_cmd, &panel.fields).unwrap();
         assert_eq!(frame.id().raw_id(), 0x123);
         assert!(frame.id().is_standard());
         assert_eq!(frame.data(), &[0xAA, 0xBB]);
@@ -1009,12 +1032,7 @@ mod tests {
         panel.fields[1].push('0');
         panel.fields[1].push('1');
 
-        let frame = build_frame(
-            panel.service_type,
-            &panel.nmt_cmd,
-            &panel.fields,
-        )
-        .unwrap();
+        let frame = build_frame(panel.service_type, &panel.nmt_cmd, &panel.fields).unwrap();
         assert_eq!(frame.id().raw_id(), 0x1FFF_FFFF);
         assert!(frame.id().is_extended());
     }
@@ -1162,15 +1180,15 @@ mod tests {
 
     #[test]
     fn hex_char_recognition() {
-        assert!(is_hex_char('0'));
-        assert!(is_hex_char('9'));
-        assert!(is_hex_char('a'));
-        assert!(is_hex_char('f'));
-        assert!(is_hex_char('A'));
-        assert!(is_hex_char('F'));
-        assert!(!is_hex_char('g'));
-        assert!(!is_hex_char('G'));
-        assert!(!is_hex_char(' '));
-        assert!(!is_hex_char('-'));
+        assert!('0'.is_ascii_hexdigit());
+        assert!('9'.is_ascii_hexdigit());
+        assert!('a'.is_ascii_hexdigit());
+        assert!('f'.is_ascii_hexdigit());
+        assert!('A'.is_ascii_hexdigit());
+        assert!('F'.is_ascii_hexdigit());
+        assert!(!'g'.is_ascii_hexdigit());
+        assert!(!'G'.is_ascii_hexdigit());
+        assert!(!' '.is_ascii_hexdigit());
+        assert!(!'-'.is_ascii_hexdigit());
     }
 }

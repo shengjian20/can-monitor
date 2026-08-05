@@ -263,3 +263,19 @@
 - **USB-CAN 权限表述**: 仓库**没有** udev 规则文件 (find 确认), 文档只写 devcontainer `--device=/dev/bus/usb` + 宿主机需设备节点读写权限 (自行配 udev 或 root), 不得虚构 rules 文件路径
 - **J1939 协议摘要含省略号字符** "TP… FF01" (未完成) / "TP FF01" (完成) — 文档表格里保留原样即可
 - 验证方法: 写完文档后 `cargo test` 核对测试计数、`ls third_party/controlcan` 核对库布局、`grep` 核对快捷键/CLI 与 app.rs 一致
+
+## Final Wave 质量门禁修复 (Task 24, F1+F2 REJECT 后)
+
+- **rustdoc intra-doc link 规则**: `//!` 模块级文档的链接**相对 crate 根**解析, 而 `///` item 文档相对 item 所在模块解析。因此模块级 `//!` 里链接同模块 item (如 `[ParsedMessage]`) 会报 unresolved —— 必须写完整路径 `[X](crate::module::X)`, 或 `[`X`](path)`. 外部 crate 依赖 (canopen_stack) 也同理。crate 名 (如 can-types) 不是 item, 用纯 code span 反引号。
+- **private item 链接**: `[`READ_TIMEOUT`]` 等链接到私有 const/字段会报 "links to private item", 改纯文本反引号或 `pub(crate)`。链接到私有 trait (VciOps) 同理。
+- **冗余显式链接**: 显式目标与 label 解析到同一位置时 rustdoc 报 "redundant explicit link target" (如 `[`UsbVciBackend`](crate::UsbVciBackend)`) —— 去掉显式目标。
+- **rustdoc 全量验证**: `cargo doc --workspace --no-deps 2>&1 | grep -c warning` 目标 0。
+- **truncation-before-check bug**: `CanId::new_standard(obj.ID as u16)` 在范围检查前 `as u16` 截断 (0x10000 → 0x000 静默通过), 修复为先按 `MAX_STANDARD_ID`/`MAX_EXTENDED_ID` 检查再构造。
+- **sync_frame 签名**: `CanopenService::sync_frame()` 从返回 `CanFrame` (内部 `.expect()`) 改为 `Result<CanFrame>` (与 nmt_frame/sdo_* 一致), 无测试直接调用, 仅文档引用。
+- **reader 线程启动失败**: `start_reader` 返回 `Result<(), String>` (spawn 失败传播), 调用方 (main.rs / 测试) 加 `?` / `.unwrap()`。
+- **logger 错误处理**: `log_frame`/`flush` 失败不再 `let _` 静默吞掉 —— App 新增 `logger_errors: u64` 计数并入状态栏 error_count, 失败同时写 `last_error` 显示; `close_logger()` 公共方法在 main.rs 退出路径调用 (`app.close_logger()?`) 避免缓冲丢失 (Task 21 实测)。
+- **select 越界 set()**: 给 `SelectField` 加 `set(index)` (越界忽略) 替代直接写私有 `index` 字段。
+- **泛型 hex 解析**: 三个 `parse_hex_u16/u8/u32` 副本合并为内部 `parse_hex_u<T: FromStrRadix>` + 私有 `FromStrRadix` trait (u8/u16/u32 impl); 注意 `from_str_radix` 不是 `FromStr` trait 方法, 泛型约束须自定义 trait。`is_hex_char` 直接删除改用 `char::is_ascii_hexdigit()`。
+- **CanError::InvalidNode**: 新增变体区分非法节点号 (原复用 InvalidId), 需同步更新 can-types 的 PartialEq/Display; canopen-stack nmt_frame/sdo_frame 返回它。
+- **不可达防御分支**: j1939 `parse_id` 中 `raw > MAX_EXTENDED_ID` 分支在 `is_extended()` 检查后不可达, 删除并加构造器不变量注释。
+- **测试计数**: 修复后 `cargo test --workspace` 174 全过 (can-monitor 107 + can-socketcan 10 + can-types 13 + can-usbvci 12 + canopen-stack 19 + j1939-stack 12 + 1 doctest), mock 模式 18 全过; 5 门禁 (fmt/doc/clippy -D warnings/test) 全绿。

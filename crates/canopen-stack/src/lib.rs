@@ -477,10 +477,10 @@ impl CanopenService {
     ///
     /// @param command NMT 命令。
     /// @param node    目标节点号; `0` 表示广播, 合法范围 0..=127。
-    /// @return 命令帧; 节点号非法 (≥ 128) 返回 [`CanError::InvalidId`]。
+    /// @return 命令帧; 节点号非法 (≥ 128) 返回 [`CanError::InvalidNode`]。
     pub fn nmt_frame(command: NmtCommand, node: u8) -> Result<CanFrame> {
         if !(0..=MAX_NODE).contains(&node) {
-            return Err(CanError::InvalidId);
+            return Err(CanError::InvalidNode);
         }
         let data = vec![command.to_byte(), node];
         CanFrame::new(CanId::new_standard(NMT_COB_ID)?, data)
@@ -493,7 +493,7 @@ impl CanopenService {
     /// @param node     目标节点号 (1..=127)。
     /// @param index    对象字典索引。
     /// @param subindex 子索引。
-    /// @return 请求帧; 节点号非法返回 [`CanError::InvalidId`]。
+    /// @return 请求帧; 节点号非法返回 [`CanError::InvalidNode`]。
     pub fn sdo_read_frame(node: u8, index: u16, subindex: u8) -> Result<CanFrame> {
         let mut payload = vec![0x40];
         payload.extend_from_slice(&index.to_le_bytes());
@@ -511,7 +511,7 @@ impl CanopenService {
     /// @param index    对象字典索引。
     /// @param subindex 子索引。
     /// @param data     待写入数据 (≤ 8 字节)。
-    /// @return 请求帧; 节点号非法返回 [`CanError::InvalidId`],
+    /// @return 请求帧; 节点号非法返回 [`CanError::InvalidNode`],
     ///         数据超 8 字节返回 [`CanError::FrameTooLong`]。
     pub fn sdo_write_frame(node: u8, index: u16, subindex: u8, data: &[u8]) -> Result<CanFrame> {
         let payload = match data.len() {
@@ -537,12 +537,9 @@ impl CanopenService {
 
     /// 构造 SYNC 同步帧 (COB-ID `0x080`, 空数据)。
     ///
-    /// 恒不失败 (ID 与数据长度均在合法范围内)。
-    ///
-    /// @return SYNC 帧。
-    pub fn sync_frame() -> CanFrame {
-        CanFrame::new(CanId::new_standard(SYNC_COB_ID).expect("0x080 是合法标准 ID"), Vec::new())
-            .expect("空数据帧长度合法")
+    /// @return 成功返回 SYNC 帧; 帧构造失败返回 [`CanError`]。
+    pub fn sync_frame() -> Result<CanFrame> {
+        CanFrame::new(CanId::new_standard(SYNC_COB_ID)?, Vec::new())
     }
 
     /// 记录一条消息, 更新节点健康状态 (仅心跳消息生效)。
@@ -588,10 +585,10 @@ impl CanopenService {
 /// @param cob_base COB-ID 基址 (请求 `0x600` / 响应 `0x580`)。
 /// @param node     节点号 (1..=127)。
 /// @param payload  8 字节 SDO 载荷。
-/// @return 帧; 节点号非法返回 [`CanError::InvalidId`]。
+/// @return 帧; 节点号非法返回 [`CanError::InvalidNode`]。
 fn sdo_frame(cob_base: u16, node: u8, payload: Vec<u8>) -> Result<CanFrame> {
     if !(1..=MAX_NODE).contains(&node) {
-        return Err(CanError::InvalidId);
+        return Err(CanError::InvalidNode);
     }
     let id = CanId::new_standard(cob_base + u16::from(node))?;
     CanFrame::new(id, payload)
@@ -670,7 +667,13 @@ mod tests {
     #[test]
     fn parse_emcy_node1() {
         let msg = CanopenService::parse(&frame(0x081, &[0x10, 0x00, 0, 0, 0, 0, 0, 0])).unwrap();
-        assert_eq!(msg, CanopenMessage::Emcy { node: 1, code: 0x0010 });
+        assert_eq!(
+            msg,
+            CanopenMessage::Emcy {
+                node: 1,
+                code: 0x0010
+            }
+        );
     }
 
     /// 0x080 / 0x100 → SYNC / TIME。
@@ -798,20 +801,20 @@ mod tests {
         assert_eq!(f.data(), &[0x21, 0x00, 0x20, 0x00, 6, 0, 0, 0]);
     }
 
-    /// 节点号非法 → InvalidId。
+    /// 节点号非法 → InvalidNode。
     #[test]
     fn build_with_invalid_node_rejected() {
         assert_eq!(
             CanopenService::sdo_read_frame(0, 0x1000, 0),
-            Err(CanError::InvalidId)
+            Err(CanError::InvalidNode)
         );
         assert_eq!(
             CanopenService::sdo_write_frame(200, 0x1000, 0, &[1]),
-            Err(CanError::InvalidId)
+            Err(CanError::InvalidNode)
         );
         assert_eq!(
             CanopenService::nmt_frame(NmtCommand::StopRemoteNode, 128),
-            Err(CanError::InvalidId)
+            Err(CanError::InvalidNode)
         );
     }
 

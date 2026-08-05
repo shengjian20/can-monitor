@@ -5,8 +5,9 @@
 //!
 //! ## 监控开关语义
 //!
-//! 监控开关 **默认关闭**: reader 线程只在 [`MonitorBus::set_monitoring`] 显式
-//! 开启后才开始消费后端帧; 关闭时线程休眠轮询开关, **不触碰后端**。投递
+//! 监控开关 **默认关闭**: reader 线程只在
+//! [`MonitorBus::set_monitoring`](crate::bus::MonitorBus::set_monitoring)
+//! 显式开启后才开始消费后端帧; 关闭时线程休眠轮询开关, **不触碰后端**。投递
 //! channel 采用有界容量, 满时发送阻塞即天然背压, 不会因无人消费而无界增长。
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -96,7 +97,7 @@ impl MonitorBus {
     ///
     /// 线程循环行为:
     /// - **监控关闭**时休眠轮询开关, 不读取后端 (不消费帧);
-    /// - **监控开启**时以 [`READ_TIMEOUT`] 阻塞读一帧, 分类后封装为
+    /// - **监控开启**时以 `READ_TIMEOUT` (100ms) 阻塞读一帧, 分类后封装为
     ///   [`CanMessage`] (方向恒为 [`Direction::Rx`]) 投递到消息 channel,
     ///   并累计对应计数器;
     /// - 读取**超时** ([`CanError::Timeout`]) 视为正常, 直接继续下一轮;
@@ -107,12 +108,14 @@ impl MonitorBus {
     /// @param backend    已打开的后端 (线程取得所有权)。
     /// @param classifier 共享的帧分类器 (线程内加锁串行使用)。
     /// @param source     消息来源后端种类 (标记在每条消息上)。
+    /// @return 成功 `Ok(())`; 线程创建失败返回错误描述。
     pub fn start_reader<B>(
         &self,
         backend: B,
         classifier: Arc<Mutex<FrameClassifier>>,
         source: BackendKind,
-    ) where
+    ) -> std::result::Result<(), String>
+    where
         B: CanBackend + Send + 'static,
     {
         let tx = self.tx.clone();
@@ -130,7 +133,7 @@ impl MonitorBus {
             .spawn(move || {
                 let mut backend = backend;
                 while !shutdown.load(Ordering::Relaxed) {
-                    // Drain send channel.
+                    // 先排空发送队列, 保证监控关闭时下发的帧仍能写入后端。
                     while let Ok(frame) = send_rx.try_recv() {
                         if let Err(e) = backend.write_frame(&frame) {
                             errors.fetch_add(1, Ordering::Relaxed);
@@ -138,7 +141,6 @@ impl MonitorBus {
                         }
                     }
                     if !running.load(Ordering::Relaxed) {
-                        // 监控关闭: 休眠等待, 不消费后端帧。
                         thread::sleep(POLL_INTERVAL);
                         continue;
                     }
@@ -162,9 +164,7 @@ impl MonitorBus {
                             // 有界 channel: 满时阻塞即天然背压, 不无界堆积。
                             let _ = tx.send(msg);
                         }
-                        Err(CanError::Timeout) => {
-                            // 超时是正常现象, 继续下一轮。
-                        }
+                        Err(CanError::Timeout) => {}
                         Err(e) => {
                             errors.fetch_add(1, Ordering::Relaxed);
                             let _ = err_tx.try_send(format!("后端读取错误: {e}"));
@@ -172,7 +172,8 @@ impl MonitorBus {
                     }
                 }
             })
-            .expect("启动 reader 线程失败");
+            .map(|_| ())
+            .map_err(|e| format!("启动 reader 线程失败: {e}"))
     }
 
     /// 设置监控开关。
@@ -350,7 +351,8 @@ mod tests {
             Ok(frame(0x101, &[1])),          // 未知 11 位 → Raw
         ]);
         let classifier = Arc::new(Mutex::new(FrameClassifier::default()));
-        bus.start_reader(backend.clone(), classifier, BackendKind::SocketCan);
+        bus.start_reader(backend.clone(), classifier, BackendKind::SocketCan)
+            .unwrap();
 
         // 默认关闭: 不应消费任何帧。
         thread::sleep(Duration::from_millis(200));
@@ -394,7 +396,8 @@ mod tests {
             Ok(frame_ext(0x18F00480, &[1, 2])),
         ]);
         let classifier = Arc::new(Mutex::new(FrameClassifier::default()));
-        bus.start_reader(backend, classifier, BackendKind::UsbVci);
+        bus.start_reader(backend, classifier, BackendKind::UsbVci)
+            .unwrap();
 
         bus.set_monitoring(true);
         wait_until(|| !rx.is_empty());

@@ -8,7 +8,8 @@
 //! - **FFI 绑定层**: 常量、`repr(C)` 结构体与 13 个 `extern "C"` 函数声明,
 //!   以及 `build.rs` 双链接模式 (`.so` 默认 / `.a`+libusb 备选)。
 //! - **`UsbVciBackend` 后端**: 在绑定之上实现 `can-types` 定义的后端 trait
-//!   (经典 CAN 收发、轮询接收、互斥串行化与热插拔重连), 见 [`backend`]。
+//!   (经典 CAN 收发、轮询接收、互斥串行化与热插拔重连), 见
+//!   [`UsbVciBackend`]。
 //! - **mock 测试**: `mock` feature 下通过 `MockVciOps` 桩替换 FFI 调用,
 //!   无需真实硬件即可验证后端行为。
 //!
@@ -33,10 +34,9 @@ mod ffi;
 pub use backend::UsbVciBackend;
 
 pub use ffi::{
-    VCI_USBCAN1, VCI_USBCAN2, VCI_USBCAN2A, VCI_USBCAN_E_U, VCI_USBCAN_2E_U,
-    STATUS_ERR, STATUS_OK,
-    VCI_BOARD_INFO, VCI_CAN_OBJ, VCI_FILTER_RECORD, VCI_INIT_CONFIG,
-    VCI_ClearBuffer, VCI_CloseDevice, VCI_FindUsbDevice2, VCI_GetReceiveNum,
-    VCI_InitCAN, VCI_OpenDevice, VCI_ReadBoardInfo, VCI_Receive, VCI_ResetCAN,
-    VCI_SetReference, VCI_StartCAN, VCI_Transmit, VCI_UsbDeviceReset,
+    VCI_ClearBuffer, VCI_CloseDevice, VCI_FindUsbDevice2, VCI_GetReceiveNum, VCI_InitCAN,
+    VCI_OpenDevice, VCI_ReadBoardInfo, VCI_Receive, VCI_ResetCAN, VCI_SetReference, VCI_StartCAN,
+    VCI_Transmit, VCI_UsbDeviceReset, STATUS_ERR, STATUS_OK, VCI_BOARD_INFO, VCI_CAN_OBJ,
+    VCI_FILTER_RECORD, VCI_INIT_CONFIG, VCI_USBCAN1, VCI_USBCAN2, VCI_USBCAN2A, VCI_USBCAN_2E_U,
+    VCI_USBCAN_E_U,
 };

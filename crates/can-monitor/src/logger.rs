@@ -103,7 +103,9 @@ impl CandumpLogger {
             return Ok(());
         };
         let elapsed = match frame.timestamp() {
-            Some(ts) => ts.duration_since(self.start_systime).unwrap_or(Duration::ZERO),
+            Some(ts) => ts
+                .duration_since(self.start_systime)
+                .unwrap_or(Duration::ZERO),
             None => self.start.elapsed(),
         };
         writeln!(writer, "{}", Self::format_line(frame, iface, elapsed))?;
@@ -227,12 +229,16 @@ mod tests {
         let path = temp_log_path("append");
         {
             let mut logger = CandumpLogger::new(&path).unwrap();
-            logger.log_frame(&std_frame(0x100, vec![0x01]), "vcan0").unwrap();
+            logger
+                .log_frame(&std_frame(0x100, vec![0x01]), "vcan0")
+                .unwrap();
             logger.close().unwrap();
         }
         {
             let mut logger = CandumpLogger::new(&path).unwrap();
-            logger.log_frame(&std_frame(0x200, vec![0x02]), "vcan0").unwrap();
+            logger
+                .log_frame(&std_frame(0x200, vec![0x02]), "vcan0")
+                .unwrap();
             logger.close().unwrap();
         }
         let content = std::fs::read_to_string(&path).unwrap();
@@ -249,7 +255,9 @@ mod tests {
         logger.set_enabled(false);
         assert!(!logger.is_enabled());
 
-        logger.log_frame(&std_frame(0x123, vec![0xAA]), "vcan0").unwrap();
+        logger
+            .log_frame(&std_frame(0x123, vec![0xAA]), "vcan0")
+            .unwrap();
         logger.close().unwrap();
 
         let content = std::fs::read_to_string(&path).unwrap();
@@ -263,15 +271,22 @@ mod tests {
         let path = temp_log_path("reenabled");
         let mut logger = CandumpLogger::new(&path).unwrap();
         logger.set_enabled(false);
-        logger.log_frame(&std_frame(0x100, vec![0x01]), "vcan0").unwrap();
+        logger
+            .log_frame(&std_frame(0x100, vec![0x01]), "vcan0")
+            .unwrap();
         logger.set_enabled(true);
-        logger.log_frame(&std_frame(0x200, vec![0x02]), "vcan0").unwrap();
+        logger
+            .log_frame(&std_frame(0x200, vec![0x02]), "vcan0")
+            .unwrap();
         logger.close().unwrap();
 
         let content = std::fs::read_to_string(&path).unwrap();
         let _ = std::fs::remove_file(&path);
         assert!(content.contains("200#02"), "实际: {content}");
-        assert!(!content.contains("100#01"), "关闭期间不应写入,实际: {content}");
+        assert!(
+            !content.contains("100#01"),
+            "关闭期间不应写入,实际: {content}"
+        );
     }
 
     /// 帧自带时间戳时,应相对 logger 创建时刻换算 (确定性的 2.345678 秒)。

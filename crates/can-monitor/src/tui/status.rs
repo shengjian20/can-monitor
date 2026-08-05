@@ -1,6 +1,6 @@
 //! # 状态栏组件
 //!
-//! 纯渲染组件, 由 [`App`](super::app::App) 每帧传入数据后渲染三行状态栏:
+//! 纯渲染组件, 由 [`App`](crate::tui::app::App) 每帧传入数据后渲染三行状态栏:
 //!
 //! - 第一行: 后端类型 + 接口名 + 监控开关 + 过滤开关 + 日志开关
 //! - 第二行: 帧计数 (总帧 / CANopen / J1939 / 错误)
@@ -19,7 +19,7 @@ use ratatui::Frame;
 
 /// 状态栏显示数据。
 ///
-/// 纯数据结构, 由 [`App`](super::app::App) 每帧填充后传入渲染函数。
+/// 纯数据结构, 由 [`App`](crate::tui::app::App) 每帧填充后传入渲染函数。
 /// 不持有任何引用到总线或过滤器, 便于单元测试。
 pub struct StatusBarData<'a> {
     /// 后端类型名称 (如 "SocketCAN" / "USBCAN" / "None")。
@@ -34,7 +34,7 @@ pub struct StatusBarData<'a> {
     pub canopen_count: u64,
     /// J1939 帧数。
     pub j1939_count: u64,
-    /// 后端错误帧数。
+    /// 错误计数 (后端读取错误 + 日志写入失败)。
     pub error_count: u64,
     /// 过滤总开关状态。
     pub filter_enabled: bool,
@@ -110,7 +110,10 @@ pub fn render_status_bar(data: &StatusBarData, frame: &mut Frame, area: Rect) {
 
     // 第一行: 后端 接口 | 监控:ON/OFF | 过滤:ON/OFF | 日志:ON/OFF
     let line1 = Line::from(vec![
-        Span::styled(format!("{} ", data.backend), Style::default().fg(Color::Yellow)),
+        Span::styled(
+            format!("{} ", data.backend),
+            Style::default().fg(Color::Yellow),
+        ),
         Span::styled(data.iface, Style::default().fg(Color::Cyan)),
         Span::raw("  "),
         Span::styled("监控:", Style::default().fg(Color::White)),
@@ -128,9 +131,10 @@ pub fn render_status_bar(data: &StatusBarData, frame: &mut Frame, area: Rect) {
 
     // 第三行: 错误信息或空白占位
     let line3 = match data.last_error {
-        Some(err) => Line::from(vec![
-            Span::styled(format!("⚠ {err}"), Style::default().fg(Color::Red)),
-        ]),
+        Some(err) => Line::from(vec![Span::styled(
+            format!("⚠ {err}"),
+            Style::default().fg(Color::Red),
+        )]),
         None => Line::from(vec![Span::raw("")]),
     };
 
@@ -242,7 +246,11 @@ mod tests {
     /// 过滤开启: ON 绿色。
     #[test]
     fn filter_on_returns_green() {
-        let data = TestData { filter: true, ..TestData::default() }.build();
+        let data = TestData {
+            filter: true,
+            ..TestData::default()
+        }
+        .build();
         let (text, color) = data.filter_text();
         assert_eq!(text, "ON");
         assert_eq!(color, Color::Green);
@@ -269,7 +277,11 @@ mod tests {
     /// 日志开启: ON 绿色。
     #[test]
     fn logger_on_returns_green() {
-        let data = TestData { logger: Some(true), ..TestData::default() }.build();
+        let data = TestData {
+            logger: Some(true),
+            ..TestData::default()
+        }
+        .build();
         let (text, color) = data.logger_text();
         assert_eq!(text, "ON");
         assert_eq!(color, Color::Green);
@@ -278,7 +290,11 @@ mod tests {
     /// 日志关闭: OFF 灰色。
     #[test]
     fn logger_off_returns_dark_gray() {
-        let data = TestData { logger: Some(false), ..TestData::default() }.build();
+        let data = TestData {
+            logger: Some(false),
+            ..TestData::default()
+        }
+        .build();
         let (text, color) = data.logger_text();
         assert_eq!(text, "OFF");
         assert_eq!(color, Color::DarkGray);

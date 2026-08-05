@@ -1,7 +1,7 @@
 //! # 报文流列表组件
 //!
-//! 纯渲染组件 [`MessageStream`], 以 [`ratatui::widgets::Table`] 展示 CAN 报文列表,
-//! 支持:
+//! 纯渲染组件 [`MessageStream`](crate::tui::stream::MessageStream), 以
+//! [`ratatui::widgets::Table`] 展示 CAN 报文列表, 支持:
 //!
 //! - **列**: 时间戳 / ID / DLC / 数据字节 / 协议摘要 / 收发方向
 //! - **滚动**: 尾部自动跟随 (`follow_tail`); 用户上滚暂停, 按 `End` 恢复
@@ -201,7 +201,6 @@ impl MessageStream {
             .map(|msg| {
                 let style = row_style(msg, highlight);
                 let cells = format_row_cells(msg);
-                // idx=0 对应 messages 最后一条, 用交替色加深可读性。
                 let row = Row::new(cells);
                 row.style(style)
             })
@@ -219,9 +218,9 @@ impl MessageStream {
             Constraint::Length(14), // 时间戳 sec.usec
             Constraint::Length(10), // ID (标准 3 位 / 扩展 8 位 + 前缀)
             Constraint::Length(4),  // DLC
-            Constraint::Min(20),   // 数据 hex
+            Constraint::Min(20),    // 数据 hex
             Constraint::Length(16), // 协议摘要
-            Constraint::Length(4), // 方向
+            Constraint::Length(4),  // 方向
         ];
 
         let table = Table::new(rows, widths)
@@ -363,9 +362,7 @@ fn format_protocol(msg: &DisplayMessage) -> String {
                 format!("PGN {pgn:04X}")
             }
             J1939Message::Transport {
-                pgn,
-                reassembled,
-                ..
+                pgn, reassembled, ..
             } => {
                 if reassembled.is_some() {
                     format!("TP {pgn:04X}")
@@ -415,7 +412,7 @@ fn row_style(msg: &DisplayMessage, highlight: &Highlighter) -> Style {
     }
 }
 
-/// 将 [`HighlightStyle`] 映射为 [`ratatui::Color`]。
+/// 将 [`HighlightStyle`] 映射为 `ratatui::Color`。
 ///
 /// @param style 高亮样式。
 /// @return 对应颜色; `Default` 返回 `Color::Reset` (使用默认)。
@@ -457,7 +454,10 @@ mod tests {
     fn format_id_extended_8hex() {
         let frame = CanFrame::new(CanId::new_extended(0x18FEF100).unwrap(), vec![1]).unwrap();
         let msg = CanMessage::new(frame, BackendKind::None, Direction::Rx);
-        let dm = DisplayMessage { raw: msg, parsed: None };
+        let dm = DisplayMessage {
+            raw: msg,
+            parsed: None,
+        };
         assert_eq!(format_id(&dm), "18FEF100");
     }
 
@@ -689,7 +689,8 @@ mod tests {
         let dm = DisplayMessage {
             raw: msg,
             parsed: Some(ParsedMessage::Canopen {
-                frame: CanFrame::new(CanId::new_standard(0x000).unwrap(), vec![0x01, 0x05]).unwrap(),
+                frame: CanFrame::new(CanId::new_standard(0x000).unwrap(), vec![0x01, 0x05])
+                    .unwrap(),
                 msg: CanopenMessage::Nmt {
                     cmd: NmtCommand::StartRemoteNode,
                     node: 5,

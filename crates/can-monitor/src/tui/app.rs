@@ -37,8 +37,8 @@ use crate::classifier::FrameClassifier;
 use crate::filter::FrameFilter;
 use crate::logger::CandumpLogger;
 use crate::tui::send::SendPanel;
-use crate::tui::stream::MessageStream;
 use crate::tui::status::{render_status_bar, StatusBarData};
+use crate::tui::stream::MessageStream;
 
 /// 消息窗口最大帧数 (防内存泄漏)。
 const MAX_MESSAGES: usize = 1000;
@@ -48,7 +48,10 @@ const MAX_MESSAGES: usize = 1000;
 pub struct DisplayMessage {
     /// 原始统一消息。
     pub raw: CanMessage,
-    /// 分类结果 (用于后续高亮显示, Task 16 细化)。
+    /// 分类结果 (用于高亮与协议过滤)。
+    ///
+    /// 生产路径下 `classify` 恒返回 `Some`, 此处保持 `Option` 仅为
+    /// 测试构造未分类消息方便 (如 [`crate::tui::stream`] 的测试桩)。
     pub parsed: Option<crate::classifier::ParsedMessage>,
 }
 
@@ -85,6 +88,8 @@ pub struct App {
     logger: Option<CandumpLogger>,
     /// 日志开关 (独立于监控开关)。
     logging_enabled: bool,
+    /// 日志写入失败累计次数 (用于状态栏计数, 避免静默丢帧)。
+    logger_errors: u64,
     /// CANopen 下发面板。
     send_panel: SendPanel,
 }
@@ -102,6 +107,7 @@ pub struct CliArgs {
     pub log_file: Option<String>,
 }
 
+/// 默认 CLI 参数: 后端 none、接口 can0、非 FD、无日志文件。
 impl Default for CliArgs {
     fn default() -> Self {
         Self {
@@ -203,6 +209,7 @@ impl App {
             iface_name: "can0".to_string(),
             logger: None,
             logging_enabled: false,
+            logger_errors: 0,
             send_panel: SendPanel::new(),
         }
     }
@@ -235,6 +242,17 @@ impl App {
         self
     }
 
+    /// 冲刷并关闭日志记录器 (退出前调用, 避免缓冲丢失)。
+    ///
+    /// @return 成功 `Ok(())`; 冲刷失败返回错误描述。
+    pub fn close_logger(&mut self) -> std::result::Result<(), String> {
+        if let Some(ref mut logger) = self.logger {
+            logger.close().map_err(|e| format!("关闭日志文件失败: {e}"))
+        } else {
+            Ok(())
+        }
+    }
+
     /// 运行 TUI 事件循环。
     ///
     /// 初始化终端 (ratatui::init), 进入事件循环, 退出时清理终端状态
@@ -245,23 +263,17 @@ impl App {
         let mut terminal = ratatui::init();
 
         loop {
-            // 渲染当前状态。
             terminal.draw(|frame| self.render(frame))?;
 
-            // 轮询键盘事件 (50ms 超时, 不阻塞渲染)。
             if event::poll(Duration::from_millis(50))? {
                 if let Event::Key(key) = event::read()? {
                     self.handle_key(key);
                 }
             }
 
-            // 处理消息 channel。
             self.drain_messages();
-
-            // 处理错误 channel。
             self.drain_errors();
 
-            // 检查退出标志。
             if self.should_quit {
                 break;
             }
@@ -270,7 +282,6 @@ impl App {
         ratatui::restore();
         Ok(())
     }
-
     /// 处理键盘事件 (仅处理 [`KeyEventKind::Press`])。
     ///
     /// @param key 键盘事件。
@@ -285,9 +296,7 @@ impl App {
             self.send_panel.handle_key(key);
             // 面板处于 FillFields 且按 Enter 后无错误, 尝试发送。
             if self.send_panel.ready_to_send() {
-                let send_result = self.send_panel.try_send(|frame| {
-                    self.bus.send_frame(frame)
-                });
+                let send_result = self.send_panel.try_send(|frame| self.bus.send_frame(frame));
                 if send_result.is_ok() {
                     self.send_panel.close();
                 } else if let Err(msg) = send_result {
@@ -314,7 +323,9 @@ impl App {
                     self.logging_enabled = !self.logging_enabled;
                     if let Some(ref mut logger) = self.logger {
                         logger.set_enabled(self.logging_enabled);
-                        let _ = logger.flush();
+                        if let Err(e) = logger.flush() {
+                            self.last_error = Some(format!("日志冲刷失败: {e}"));
+                        }
                     }
                 }
             }
@@ -350,7 +361,11 @@ impl App {
             // 日志记录 (在过滤前, 记录原始帧)。
             if let Some(ref mut logger) = self.logger {
                 if self.logging_enabled {
-                    let _ = logger.log_frame(&msg.frame, &self.iface_name);
+                    if let Err(e) = logger.log_frame(&msg.frame, &self.iface_name) {
+                        // 写盘失败: 累计错误并上报状态栏, 不静默丢弃。
+                        self.logger_errors += 1;
+                        self.last_error = Some(format!("日志写入失败: {e}"));
+                    }
                 }
             }
 
@@ -358,7 +373,7 @@ impl App {
                 continue;
             }
 
-            // 分类消息 (用于后续高亮显示, Task 16 细化)。
+            // 分类消息 (供高亮与协议过滤使用)。
             let parsed = self
                 .classifier
                 .lock()
@@ -411,7 +426,8 @@ impl App {
 
     /// 渲染消息区。
     ///
-    /// 监控关闭时显示占位提示; 开启后用 [`MessageStream`] 渲染 Table。
+    /// 监控关闭时显示占位提示; 开启后用
+    /// [`MessageStream`](crate::tui::stream::MessageStream) 渲染 Table。
     ///
     /// @param frame ratatui 帧。
     /// @param area  消息区矩形。
@@ -445,7 +461,7 @@ impl App {
             total_frames: self.bus.total_frames(),
             canopen_count: self.bus.canopen_count(),
             j1939_count: self.bus.j1939_count(),
-            error_count: self.bus.error_count(),
+            error_count: self.bus.error_count() + self.logger_errors,
             filter_enabled: self.filter.is_enabled(),
             logger_enabled: self.logger.as_ref().map(|l| l.is_enabled()),
             last_error: self.last_error.as_deref(),
@@ -459,8 +475,7 @@ impl App {
     /// @param area  帮助行矩形。
     fn render_help(&self, frame: &mut Frame, area: Rect) {
         let help_text = "q:退出 SPACE/S:监控 f:过滤 l:日志 ↑↓:滚动 End:尾随 x:CANopen";
-        let paragraph =
-            Paragraph::new(help_text).style(Style::default().fg(Color::DarkGray));
+        let paragraph = Paragraph::new(help_text).style(Style::default().fg(Color::DarkGray));
         frame.render_widget(paragraph, area);
     }
 
@@ -589,7 +604,10 @@ mod tests {
         assert!(app.filter.is_enabled());
 
         // 再按 f: 过滤关闭。
-        app.handle_key(KeyEvent::new(KeyCode::Char('f'), crossterm::event::KeyModifiers::NONE));
+        app.handle_key(KeyEvent::new(
+            KeyCode::Char('f'),
+            crossterm::event::KeyModifiers::NONE,
+        ));
         assert!(!app.filter.is_enabled());
     }
 
@@ -627,7 +645,10 @@ mod tests {
         assert!(!app.logging_enabled);
 
         // 再按 l: 开启日志。
-        app.handle_key(KeyEvent::new(KeyCode::Char('l'), crossterm::event::KeyModifiers::NONE));
+        app.handle_key(KeyEvent::new(
+            KeyCode::Char('l'),
+            crossterm::event::KeyModifiers::NONE,
+        ));
         assert!(app.logging_enabled);
 
         // 清理。

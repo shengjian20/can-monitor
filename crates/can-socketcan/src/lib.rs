@@ -21,9 +21,7 @@ use std::time::{Duration, Instant, SystemTime};
 
 use can_types::{BackendConfig, CanBackend, CanError, CanFrame, CanId, Result};
 use socketcan::id::FdFlags;
-use socketcan::{
-    CanAnyFrame, CanFdSocket, CanSocket, EmbeddedFrame, Socket, SocketOptions,
-};
+use socketcan::{CanAnyFrame, CanFdSocket, CanSocket, EmbeddedFrame, Socket, SocketOptions};
 
 /// 非阻塞轮询间隔 (秒)。
 ///
@@ -57,7 +55,10 @@ impl SocketCanBackend {
     ///
     /// @return 成功返回协议无关的 [`CanFrame`];底层错误 (含 `WouldBlock`) 返回相应 [`CanError`]。
     fn read_once(&self) -> Result<CanFrame> {
-        let socket = self.socket.as_ref().ok_or(CanError::Protocol("后端已关闭"))?;
+        let socket = self
+            .socket
+            .as_ref()
+            .ok_or(CanError::Protocol("后端已关闭"))?;
         match socket {
             SocketKind::Classic(s) => {
                 let (frame, ts) = s.read_frame_with_timestamps()?;
@@ -95,7 +96,9 @@ impl CanBackend for SocketCanBackend {
                     SocketKind::Classic(s) => s.set_nonblocking(true).map_err(map_open_error)?,
                     SocketKind::Fd(s) => s.set_nonblocking(true).map_err(map_open_error)?,
                 }
-                Ok(SocketCanBackend { socket: Some(socket) })
+                Ok(SocketCanBackend {
+                    socket: Some(socket),
+                })
             }
             _ => Err(CanError::Unsupported("仅支持 SocketCan 后端配置")),
         }
@@ -104,7 +107,7 @@ impl CanBackend for SocketCanBackend {
     /// 从总线读取一帧,支持超时。
     ///
     /// 采用非阻塞探测 + 短休眠轮询:底层返回 `WouldBlock` 时休眠
-    /// [`POLL_INTERVAL`] 后重试,累计超过 `timeout` 返回 [`CanError::Timeout`]。
+    /// `POLL_INTERVAL` (1ms) 后重试,累计超过 `timeout` 返回 [`CanError::Timeout`]。
     ///
     /// @param timeout 阻塞等待一帧的最长时间。
     /// @return 成功返回收到的 [`CanFrame`];超时返回 [`CanError::Timeout`]。
@@ -130,7 +133,10 @@ impl CanBackend for SocketCanBackend {
     /// @return 成功返回 `Ok(())`;经典接口写 FD 帧返回 [`CanError::Unsupported`],
     ///         数据超长返回 [`CanError::FrameTooLong`],底层失败返回 [`CanError::Io`]。
     fn write_frame(&mut self, frame: &CanFrame) -> Result<()> {
-        let socket = self.socket.as_ref().ok_or(CanError::Protocol("后端已关闭"))?;
+        let socket = self
+            .socket
+            .as_ref()
+            .ok_or(CanError::Protocol("后端已关闭"))?;
         match socket {
             SocketKind::Classic(s) => {
                 if frame.is_fd() {
@@ -241,9 +247,7 @@ fn convert_classic_frame(frame: socketcan::CanFrame, ts: SystemTime) -> Result<C
 /// @return 转换后的 [`CanFrame`];收到错误帧返回 [`CanError::BusError`]。
 fn convert_any_frame(frame: CanAnyFrame, ts: SystemTime) -> Result<CanFrame> {
     let mut out = match frame {
-        CanAnyFrame::Normal(df) => {
-            CanFrame::new(from_socketcan_id(df.id())?, df.data().to_vec())?
-        }
+        CanAnyFrame::Normal(df) => CanFrame::new(from_socketcan_id(df.id())?, df.data().to_vec())?,
         CanAnyFrame::Remote(rf) => {
             let mut f = CanFrame::new(from_socketcan_id(rf.id())?, Vec::new())?;
             f.set_remote(true);
@@ -270,12 +274,11 @@ fn convert_any_frame(frame: CanAnyFrame, ts: SystemTime) -> Result<CanFrame> {
 fn to_socketcan_classic(frame: &CanFrame) -> Result<socketcan::CanFrame> {
     let id = to_socketcan_id(frame.id())?;
     if frame.is_remote() {
-        let rf = socketcan::CanRemoteFrame::new_remote(id, frame.len())
-            .ok_or(CanError::FrameTooLong)?;
+        let rf =
+            socketcan::CanRemoteFrame::new_remote(id, frame.len()).ok_or(CanError::FrameTooLong)?;
         Ok(socketcan::CanFrame::Remote(rf))
     } else {
-        let df = socketcan::CanDataFrame::new(id, frame.data())
-            .ok_or(CanError::FrameTooLong)?;
+        let df = socketcan::CanDataFrame::new(id, frame.data()).ok_or(CanError::FrameTooLong)?;
         Ok(socketcan::CanFrame::Data(df))
     }
 }
@@ -292,12 +295,11 @@ fn to_socketcan_any(frame: &CanFrame) -> Result<CanAnyFrame> {
             .ok_or(CanError::FrameTooLong)?;
         Ok(CanAnyFrame::Fd(fdf))
     } else if frame.is_remote() {
-        let rf = socketcan::CanRemoteFrame::new_remote(id, frame.len())
-            .ok_or(CanError::FrameTooLong)?;
+        let rf =
+            socketcan::CanRemoteFrame::new_remote(id, frame.len()).ok_or(CanError::FrameTooLong)?;
         Ok(CanAnyFrame::Remote(rf))
     } else {
-        let df = socketcan::CanDataFrame::new(id, frame.data())
-            .ok_or(CanError::FrameTooLong)?;
+        let df = socketcan::CanDataFrame::new(id, frame.data()).ok_or(CanError::FrameTooLong)?;
         Ok(CanAnyFrame::Normal(df))
     }
 }
@@ -351,8 +353,7 @@ mod tests {
     fn classic_extended_frame_roundtrip() {
         let id = ExtendedId::new(0x1F_FFFF).unwrap();
         let df = CanDataFrame::new(id, &[0xAA, 0xBB]).unwrap();
-        let frame =
-            convert_classic_frame(socketcan::CanFrame::Data(df), fixed_ts()).unwrap();
+        let frame = convert_classic_frame(socketcan::CanFrame::Data(df), fixed_ts()).unwrap();
 
         assert!(frame.id().is_extended());
         assert_eq!(frame.id().raw_id(), 0x1F_FFFF);
@@ -364,8 +365,7 @@ mod tests {
     fn classic_remote_frame_roundtrip() {
         let id = StandardId::new(0x456).unwrap();
         let rf = CanRemoteFrame::new_remote(id, 2).unwrap();
-        let frame =
-            convert_classic_frame(socketcan::CanFrame::Remote(rf), fixed_ts()).unwrap();
+        let frame = convert_classic_frame(socketcan::CanFrame::Remote(rf), fixed_ts()).unwrap();
 
         assert!(frame.is_remote());
         assert_eq!(frame.id().raw_id(), 0x456);
@@ -415,10 +415,16 @@ mod tests {
     #[test]
     fn id_bidirectional_conversion() {
         let std_id = CanId::new_standard(0x7FF).unwrap();
-        assert_eq!(from_socketcan_id(to_socketcan_id(std_id).unwrap()).unwrap(), std_id);
+        assert_eq!(
+            from_socketcan_id(to_socketcan_id(std_id).unwrap()).unwrap(),
+            std_id
+        );
 
         let ext_id = CanId::new_extended(0x1FFF_FFFF).unwrap();
-        assert_eq!(from_socketcan_id(to_socketcan_id(ext_id).unwrap()).unwrap(), ext_id);
+        assert_eq!(
+            from_socketcan_id(to_socketcan_id(ext_id).unwrap()).unwrap(),
+            ext_id
+        );
 
         // 0x800 及以下的标准值应保持标准而非误判为扩展
         let low_ext = CanId::new_extended(0x100).unwrap();
@@ -524,7 +530,9 @@ mod vcan_tests {
         let frame = CanFrame::new_fd(id, vec![0xAA; 32], true, false).unwrap();
         writer.write_frame(&frame).expect("写 FD 帧失败");
 
-        let got = reader.read_frame(Duration::from_secs(2)).expect("读 FD 帧超时");
+        let got = reader
+            .read_frame(Duration::from_secs(2))
+            .expect("读 FD 帧超时");
         assert_eq!(got.id(), id);
         assert_eq!(got.data(), &[0xAA; 32]);
         assert!(got.is_fd());

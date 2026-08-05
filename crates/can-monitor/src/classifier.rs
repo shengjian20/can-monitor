@@ -1,13 +1,14 @@
 //! # 帧分类器
 //!
 //! 将后端读到的原始 CAN 帧按帧格式分发给对应协议栈解析, 产出统一的
-//! [`ParsedMessage`]:
+//! [`ParsedMessage`](crate::classifier::ParsedMessage):
 //!
-//! - **11 位标准帧** → CANopen 栈 ([`CanopenService`])
-//! - **29 位扩展帧** → J1939 栈 ([`J1939Service`])
-//! - **无法归属** (远程帧 / 未分配 COB-ID / 孤儿传输层帧) → [`ParsedMessage::Raw`]
+//! - **11 位标准帧** → CANopen 栈 ([`CanopenService`](canopen_stack::CanopenService))
+//! - **29 位扩展帧** → J1939 栈 ([`J1939Service`](j1939_stack::J1939Service))
+//! - **无法归属** (远程帧 / 未分配 COB-ID / 孤儿传输层帧)
+//!   → [`ParsedMessage::Raw`](crate::classifier::ParsedMessage::Raw)
 //!
-//! 分类器只依赖 [`can-types`] 的帧类型与两个协议栈, 不依赖任何具体后端,
+//! 分类器只依赖 `can-types` 的帧类型与两个协议栈, 不依赖任何具体后端,
 //! 因此可在 SocketCAN / USBCAN 等不同后端之上复用同一套分类逻辑。
 
 use std::time::{Duration, Instant};
@@ -123,7 +124,6 @@ impl FrameClassifier {
     /// @return 分类结果 [`ParsedMessage`]。
     pub fn classify(&mut self, frame: &CanFrame) -> ParsedMessage {
         if frame.id().is_standard() {
-            // CANopen 使用 11 位标准帧。
             match CanopenService::parse(frame) {
                 Some(CanopenMessage::Unknown) => {
                     // 未分配 COB-ID 不属于 CiA 301 预定义连接集, 视为原始帧。
@@ -251,8 +251,7 @@ mod tests {
     #[test]
     fn unknown_extended_is_raw() {
         let mut c = FrameClassifier::default();
-        let parsed =
-            c.classify(&frame_ext(0x1CEBFF80, &[1, 2, 3, 4, 5, 6, 7, 8]));
+        let parsed = c.classify(&frame_ext(0x1CEBFF80, &[1, 2, 3, 4, 5, 6, 7, 8]));
         assert_eq!(parsed.protocol(), Protocol::Raw);
         match parsed {
             ParsedMessage::Raw(f) => assert_eq!(f.id().raw_id(), 0x1CEBFF80),

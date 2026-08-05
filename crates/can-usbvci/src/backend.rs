@@ -26,7 +26,9 @@ use std::sync::{Mutex, MutexGuard};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime};
 
-use can_types::{BackendConfig, CanBackend, CanError, CanFrame, CanId, Result};
+use can_types::{
+    BackendConfig, CanBackend, CanError, CanFrame, CanId, Result, MAX_EXTENDED_ID, MAX_STANDARD_ID,
+};
 
 #[cfg(not(feature = "mock"))]
 use crate::ffi::STATUS_OK;
@@ -272,7 +274,8 @@ impl VciOps for RealVciOps {
 
 /// USBCAN (VCI) 经典 CAN 后端。
 ///
-/// 通过 [`VciOps`] 访问驱动, 支持轮询接收、互斥串行化与热插拔重连。
+/// 通过 `VciOps` (VCI 调用抽象, 真实 FFI 或 mock 桩) 访问驱动, 支持轮询接收、
+/// 互斥串行化与热插拔重连。
 /// 仅支持经典 CAN (标准帧 / 扩展帧 / 远程帧), CANFD 帧会返回
 /// [`CanError::Unsupported`]。
 pub struct UsbVciBackend {
@@ -397,9 +400,20 @@ impl UsbVciBackend {
 }
 
 impl CanBackend for UsbVciBackend {
+    /// 按配置打开 USBCAN 后端。
+    ///
+    /// 固定以 `VCI_USBCAN2` + 通道 `channel` 打开, 执行完整初始化
+    /// (OpenDevice → InitCAN → StartCAN), 500kbps 波特率。
+    ///
+    /// @param config 后端配置, 仅支持 [`BackendConfig::UsbVci`]。
+    /// @return 成功返回已打开的 [`UsbVciBackend`]; 配置不是 UsbVci 返回
+    ///         [`CanError::Unsupported`], 打开/初始化失败返回对应 [`CanError`]。
     fn open(config: &BackendConfig) -> Result<Self> {
         let (device_type, channel) = match config {
-            BackendConfig::UsbVci { device_type, channel } => (*device_type, *channel),
+            BackendConfig::UsbVci {
+                device_type,
+                channel,
+            } => (*device_type, *channel),
             BackendConfig::SocketCan { .. } => {
                 return Err(CanError::Unsupported("SocketCAN 配置不适用于 USBCAN 后端"));
             }
@@ -427,6 +441,14 @@ impl CanBackend for UsbVciBackend {
         }
     }
 
+    /// 从总线读取一帧, 支持超时与热插拔重连。
+    ///
+    /// 优先返回内部缓冲帧 (批量取回); 无缓冲时轮询驱动接收队列, 设备拔出
+    /// ([`CanError::DeviceUnplugged`]) 自动重连, 累计超过 `timeout` 返回
+    /// [`CanError::Timeout`]。
+    ///
+    /// @param timeout 阻塞等待一帧的最长时间。
+    /// @return 成功返回收到的 [`CanFrame`]; 超时返回 [`CanError::Timeout`]。
     fn read_frame(&mut self, timeout: Duration) -> Result<CanFrame> {
         let mut deadline = Instant::now() + timeout;
         loop {
@@ -496,6 +518,11 @@ impl CanBackend for UsbVciBackend {
         }
     }
 
+    /// 向总线写入一帧。
+    ///
+    /// @param frame 待发送的帧。
+    /// @return 成功返回 `Ok(())`; CANFD 帧返回 [`CanError::Unsupported`],
+    ///         驱动未接收返回 [`CanError::Protocol`], 底层失败返回对应 [`CanError`]。
     fn write_frame(&mut self, frame: &CanFrame) -> Result<()> {
         let mut obj = frame_to_vci_obj(frame)?;
         let sent = {
@@ -514,6 +541,9 @@ impl CanBackend for UsbVciBackend {
         }
     }
 
+    /// 关闭后端并释放设备句柄。
+    ///
+    /// @return 成功返回 `Ok(())` (关闭失败同样视为成功, 见 `close_device`)。
     fn close(&mut self) -> Result<()> {
         self.close_device()
     }
@@ -531,12 +561,20 @@ impl CanBackend for UsbVciBackend {
 /// @param obj 驱动返回的 `VCI_CAN_OBJ`。
 /// @return 转换后的 [`CanFrame`]; 非法 ID 返回 [`CanError::Protocol`]。
 fn vci_obj_to_frame(obj: &VCI_CAN_OBJ) -> Result<CanFrame> {
+    // 先按位宽范围检查, 再构造 CanId — 避免 `as u16` 截断在检查之前发生
+    // (如 0x10000 会静默截断为 0x000)。
     let id = if obj.ExternFlag != 0 {
-        CanId::new_extended(obj.ID)
+        if obj.ID > MAX_EXTENDED_ID {
+            return Err(CanError::Protocol("VCI 返回非法扩展 CAN ID"));
+        }
+        CanId::new_extended(obj.ID).map_err(|_| CanError::Protocol("VCI 返回非法扩展 CAN ID"))?
     } else {
+        if obj.ID > MAX_STANDARD_ID {
+            return Err(CanError::Protocol("VCI 返回非法标准 CAN ID"));
+        }
         CanId::new_standard(obj.ID as u16)
-    }
-    .map_err(|_| CanError::Protocol("VCI 返回非法 CAN ID"))?;
+            .map_err(|_| CanError::Protocol("VCI 返回非法标准 CAN ID"))?
+    };
 
     let data_len = (obj.DataLen as usize).min(obj.Data.len());
     let mut frame = CanFrame::new(id, obj.Data[..data_len].to_vec())?;
@@ -772,7 +810,8 @@ mod conversion_tests {
     /// CANFD 帧 → 驱动帧: 返回 Unsupported (硬件仅经典 CAN)。
     #[test]
     fn frame_to_vci_obj_rejects_fd() {
-        let f = CanFrame::new_fd(CanId::new_standard(1).unwrap(), vec![0u8; 16], true, false).unwrap();
+        let f =
+            CanFrame::new_fd(CanId::new_standard(1).unwrap(), vec![0u8; 16], true, false).unwrap();
         assert!(matches!(
             frame_to_vci_obj(&f),
             Err(CanError::Unsupported(_))
@@ -794,14 +833,11 @@ mod mock_tests {
     /// @return (后端, 设备状态句柄)。
     fn make_backend(delay: Duration, attempts: u32) -> (UsbVciBackend, Arc<Mutex<MockDevice>>) {
         let device = Arc::new(Mutex::new(MockDevice::new()));
-        let ops = MockVciOps { state: device.clone() };
-        let backend = UsbVciBackend::new_with(
-            crate::ffi::VCI_USBCAN2,
-            0,
-            Box::new(ops),
-            delay,
-            attempts,
-        );
+        let ops = MockVciOps {
+            state: device.clone(),
+        };
+        let backend =
+            UsbVciBackend::new_with(crate::ffi::VCI_USBCAN2, 0, Box::new(ops), delay, attempts);
         (backend, device)
     }
 
@@ -873,11 +909,9 @@ mod mock_tests {
                     let mut sent = 0u32;
                     for i in 0..8u16 {
                         let mut backend = shared.lock().unwrap();
-                        let frame = CanFrame::new(
-                            CanId::new_standard(0x500 + i).unwrap(),
-                            vec![i as u8],
-                        )
-                        .unwrap();
+                        let frame =
+                            CanFrame::new(CanId::new_standard(0x500 + i).unwrap(), vec![i as u8])
+                                .unwrap();
                         if backend.write_frame(&frame).is_ok() {
                             sent += 1;
                         }
@@ -906,7 +940,11 @@ mod mock_tests {
     fn hotplug_reconnect_after_device_returns() {
         let (mut backend, device) = make_backend(Duration::from_millis(60), 5);
         // 初始在线, 预置一帧, 首次读取成功。
-        device.lock().unwrap().rx_queue.push_back(obj(0x111, &[0xAA]));
+        device
+            .lock()
+            .unwrap()
+            .rx_queue
+            .push_back(obj(0x111, &[0xAA]));
         let f1 = backend.read_frame(Duration::from_millis(500)).unwrap();
         assert_eq!(f1.id(), CanId::new_standard(0x111).unwrap());
 

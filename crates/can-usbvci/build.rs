@@ -29,9 +29,7 @@ fn vendor_lib_dir(vendor_root: &Path) -> PathBuf {
     } else if arch.starts_with("aarch64") {
         vendor_root.join("aarch64")
     } else {
-        panic!(
-            "can-usbvci: 不支持的 target 架构: {target} (仅提供 x86_64 与 aarch64 的供应商库)"
-        );
+        panic!("can-usbvci: 不支持的 target 架构: {target} (仅提供 x86_64 与 aarch64 的供应商库)");
     }
 }
 
@@ -45,7 +43,8 @@ fn main() {
     }
 
     // 供应商库根目录 = workspace 根 (CARGO_MANIFEST_DIR/../..) + third_party/controlcan
-    let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").expect("cargo 未设置 CARGO_MANIFEST_DIR"));
+    let manifest_dir =
+        PathBuf::from(env::var("CARGO_MANIFEST_DIR").expect("cargo 未设置 CARGO_MANIFEST_DIR"));
     let vendor_root = manifest_dir
         .join("..")
         .join("..")
@@ -103,10 +102,7 @@ fn link_shared(lib_dir: &Path) {
     // (cargo 源码 add_native_deps: 仅 LinkArgTarget::Cdylib 允许跨包传递, 见
     // rust-lang/cargo#9562)。因此这里的 rpath 不会传播到依赖方 (如 can-monitor)
     // 的最终二进制 —— 那由 can-monitor/build.rs 另行注入。
-    println!(
-        "cargo:rustc-link-arg=-Wl,-rpath,{}",
-        lib_dir.display()
-    );
+    println!("cargo:rustc-link-arg=-Wl,-rpath,{}", lib_dir.display());
 }
 
 /// `static` 模式: 静态库 + 外部 libusb(0.1) + pthread。

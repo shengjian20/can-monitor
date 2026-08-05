@@ -52,6 +52,8 @@ pub enum CanError {
     Unsupported(&'static str),
     /// 非法的 CAN ID (超出 11 / 29 位范围)。
     InvalidId,
+    /// 非法的 CANopen 节点号 (超出 1..=127 或 0..=127 语义范围)。
+    InvalidNode,
     /// 帧数据过长 (标准帧 > 8 字节,或 CANFD > 64 字节)。
     FrameTooLong,
     /// 操作超时 (如 [`CanBackend::read_frame`] 在超时窗口内未收到帧)。
@@ -69,6 +71,7 @@ impl PartialEq for CanError {
             (CanError::NotFound, CanError::NotFound)
             | (CanError::BusError, CanError::BusError)
             | (CanError::InvalidId, CanError::InvalidId)
+            | (CanError::InvalidNode, CanError::InvalidNode)
             | (CanError::FrameTooLong, CanError::FrameTooLong)
             | (CanError::Timeout, CanError::Timeout)
             | (CanError::DeviceUnplugged, CanError::DeviceUnplugged) => true,
@@ -92,6 +95,7 @@ impl fmt::Display for CanError {
             CanError::Protocol(msg) => write!(f, "协议错误: {msg}"),
             CanError::Unsupported(msg) => write!(f, "不支持的操作: {msg}"),
             CanError::InvalidId => write!(f, "无效的 CAN ID (超出 11/29 位范围)"),
+            CanError::InvalidNode => write!(f, "无效的 CANopen 节点号"),
             CanError::FrameTooLong => write!(f, "帧数据过长 (标准帧 > 8 字节, CANFD > 64 字节)"),
             CanError::Timeout => write!(f, "操作超时"),
             CanError::DeviceUnplugged => write!(f, "设备已拔出"),
@@ -490,7 +494,10 @@ mod tests {
     /// 扩展帧超界 (0x20000000) 应返回 InvalidId。
     #[test]
     fn extended_id_out_of_range_err() {
-        assert_eq!(CanId::new_extended(MAX_EXTENDED_ID + 1), Err(CanError::InvalidId));
+        assert_eq!(
+            CanId::new_extended(MAX_EXTENDED_ID + 1),
+            Err(CanError::InvalidId)
+        );
         assert_eq!(CanId::new_extended(u32::MAX), Err(CanError::InvalidId));
     }
 
@@ -543,7 +550,10 @@ mod tests {
     #[test]
     fn fd_frame_65_bytes_err() {
         let id = CanId::new_extended(0x1F).unwrap();
-        assert_eq!(CanFrame::new_fd(id, vec![0u8; 65], false, false), Err(CanError::FrameTooLong));
+        assert_eq!(
+            CanFrame::new_fd(id, vec![0u8; 65], false, false),
+            Err(CanError::FrameTooLong)
+        );
     }
 
     /// 字段访问:len / data / id / 标志位 / 时间戳。
@@ -574,7 +584,10 @@ mod tests {
     #[test]
     fn error_display_impl() {
         assert_eq!(CanError::NotFound.to_string(), "设备或接口不存在");
-        assert_eq!(CanError::InvalidId.to_string(), "无效的 CAN ID (超出 11/29 位范围)");
+        assert_eq!(
+            CanError::InvalidId.to_string(),
+            "无效的 CAN ID (超出 11/29 位范围)"
+        );
         assert_eq!(CanError::Timeout.to_string(), "操作超时");
         assert_eq!(CanError::BusError.to_string(), "CAN 总线错误");
         assert_eq!(CanError::Protocol("bad").to_string(), "协议错误: bad");

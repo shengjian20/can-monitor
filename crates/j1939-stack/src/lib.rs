@@ -21,7 +21,8 @@ use std::time::Instant;
 
 use can_types::{CanFrame, CanId};
 use sae_j1939_host::sae_j1939_rs::{
-    pgn as sae_pgn, tp::{Reassembler, Rx, TpCm, TpDt},
+    pgn as sae_pgn,
+    tp::{Reassembler, Rx, TpCm, TpDt},
     Address, Id,
 };
 
@@ -227,12 +228,9 @@ impl J1939Service {
         if !id.is_extended() {
             return None;
         }
-        let raw = id.raw_id();
-        if raw > can_types::MAX_EXTENDED_ID {
-            return None;
-        }
-        // 合法扩展帧必然在 29 位范围内,掩码构造避免出错分支。
-        let jid = Id::new_masked(raw);
+        // 已确认是扩展帧: raw_id() 必然落在 29 位范围内 (构造器不变量),
+        // 掩码构造避免出错分支。
+        let jid = Id::new_masked(id.raw_id());
         let dest_addr = jid.destination_address().map(|a| a.as_u8());
         Some(J1939Header {
             priority: jid.priority().as_u8(),
@@ -255,9 +253,7 @@ impl J1939Service {
     pub fn parse(&mut self, frame: &CanFrame) -> Option<J1939Message> {
         // 先按真实墙钟推进超时,丢弃空闲过久的会话。
         let now = Instant::now();
-        let elapsed_ms = (now - self.last_tick)
-            .as_millis()
-            .min(u16::MAX as u128) as u16;
+        let elapsed_ms = (now - self.last_tick).as_millis().min(u16::MAX as u128) as u16;
         self.tick(elapsed_ms);
         self.last_tick = now;
 
@@ -317,6 +313,7 @@ impl J1939Service {
         let payload = pad8(frame.data());
         let cm = TpCm::decode(&payload).ok()?;
         let source = Address::new(header.source_addr);
+        // 只读监视器: 丢弃 Rx::Send(CTS) 等需要回写总线的应答 (不会发 CTS 帧)。
         let _ = self.reassembler.on_tp_cm(source, &cm);
         if !self.reassembler.is_receiving_from(source) {
             // 未被接受: 超界 BAM、无空闲槽位或非建会话消息。
@@ -324,10 +321,8 @@ impl J1939Service {
         }
         let pgn = cm.pgn().as_u32();
         let total_len = cm_size(&cm)? as usize;
-        self.sessions.insert(
-            header.source_addr,
-            TransportSession { pgn, total_len },
-        );
+        self.sessions
+            .insert(header.source_addr, TransportSession { pgn, total_len });
         Some(J1939Message::Transport {
             pgn,
             source: header.source_addr,
@@ -406,9 +401,9 @@ fn pad8(data: &[u8]) -> [u8; 8] {
 /// @return 消息总字节数;无法提供时为 `None`。
 fn cm_size(cm: &TpCm) -> Option<u16> {
     match *cm {
-        TpCm::Bam { size, .. }
-        | TpCm::Rts { size, .. }
-        | TpCm::EndOfMsgAck { size, .. } => Some(size),
+        TpCm::Bam { size, .. } | TpCm::Rts { size, .. } | TpCm::EndOfMsgAck { size, .. } => {
+            Some(size)
+        }
         TpCm::Cts { .. } | TpCm::Abort { .. } => None,
     }
 }
@@ -509,7 +504,10 @@ mod tests {
     fn direct_message_returns_data() {
         let mut service = J1939Service::new();
         let msg = service
-            .parse(&frame(0x18F00480, vec![0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08]))
+            .parse(&frame(
+                0x18F00480,
+                vec![0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08],
+            ))
             .unwrap();
         match msg {
             J1939Message::Direct { pgn, source, data } => {
@@ -525,7 +523,12 @@ mod tests {
     #[test]
     fn direct_diagnostic_message_is_classified() {
         let mut service = J1939Service::new();
-        let msg = service.parse(&frame(0x18FECA80, vec![0x41, 0x02, 0x00, 0x00, 0x00, 0xFF, 0xFF, 0xFF])).unwrap();
+        let msg = service
+            .parse(&frame(
+                0x18FECA80,
+                vec![0x41, 0x02, 0x00, 0x00, 0x00, 0xFF, 0xFF, 0xFF],
+            ))
+            .unwrap();
         match msg {
             J1939Message::Diagnostic { pgn, source, data } => {
                 assert_eq!(pgn, PGN_DM1);
@@ -544,10 +547,18 @@ mod tests {
 
         // TP.CM BAM: [0x20, size_lo, size_hi, packets, 0xFF, pgn 低中高]
         let cm = service
-            .parse(&frame(0x1CECFF80, vec![0x20, 0x14, 0x00, 0x03, 0xFF, 0xC5, 0xFD, 0x00]))
+            .parse(&frame(
+                0x1CECFF80,
+                vec![0x20, 0x14, 0x00, 0x03, 0xFF, 0xC5, 0xFD, 0x00],
+            ))
             .unwrap();
         match cm {
-            J1939Message::Transport { pgn, total_len, reassembled, .. } => {
+            J1939Message::Transport {
+                pgn,
+                total_len,
+                reassembled,
+                ..
+            } => {
                 assert_eq!(pgn, PGN_ECU_IDENTIFICATION);
                 assert_eq!(total_len, 20);
                 assert!(reassembled.is_none());
@@ -565,17 +576,28 @@ mod tests {
         let p1 = service.parse(&dt(1, &payload[0..7])).unwrap();
         assert!(matches!(
             p1,
-            J1939Message::Transport { reassembled: None, .. }
+            J1939Message::Transport {
+                reassembled: None,
+                ..
+            }
         ));
         // 包 2
         let p2 = service.parse(&dt(2, &payload[7..14])).unwrap();
         assert!(matches!(
             p2,
-            J1939Message::Transport { reassembled: None, .. }
+            J1939Message::Transport {
+                reassembled: None,
+                ..
+            }
         ));
         // 包 3 (6 字节) — 重组完成。
         match service.parse(&dt(3, &payload[14..20])).unwrap() {
-            J1939Message::Transport { pgn, source, total_len, reassembled } => {
+            J1939Message::Transport {
+                pgn,
+                source,
+                total_len,
+                reassembled,
+            } => {
                 assert_eq!(pgn, PGN_ECU_IDENTIFICATION);
                 assert_eq!(source, 0x80);
                 assert_eq!(total_len, 20);
@@ -592,17 +614,28 @@ mod tests {
         let mut service = J1939Service::new();
 
         // 声明 21 字节 (3 包) 的 DM1 BAM。
-        service.parse(&frame(0x1CECFF80, vec![0x20, 0x15, 0x00, 0x03, 0xFF, 0xCA, 0xFE, 0x00]));
+        service.parse(&frame(
+            0x1CECFF80,
+            vec![0x20, 0x15, 0x00, 0x03, 0xFF, 0xCA, 0xFE, 0x00],
+        ));
         // 先到包 3 → 乱序, 会话被丢弃。
-        let res = service.parse(&frame(0x1CEBFF80, vec![0x03, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF]));
+        let res = service.parse(&frame(
+            0x1CEBFF80,
+            vec![0x03, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF],
+        ));
         match res {
-            Some(J1939Message::Transport { reassembled: None, .. }) => {}
+            Some(J1939Message::Transport {
+                reassembled: None, ..
+            }) => {}
             other => panic!("期望乱序包丢弃 Transport, 实际 {other:?}"),
         }
         assert_eq!(service.active_sessions(), 0);
         // 随后的包 1 找不到会话 → 孤儿, 返回 None。
         assert!(service
-            .parse(&frame(0x1CEBFF80, vec![0x01, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07]))
+            .parse(&frame(
+                0x1CEBFF80,
+                vec![0x01, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07]
+            ))
             .is_none());
     }
 
@@ -612,7 +645,10 @@ mod tests {
         let mut service = J1939Service::with_timeout(2000);
 
         // 注册 BAM 会话。
-        service.parse(&frame(0x1CECFF80, vec![0x20, 0x0C, 0x00, 0x02, 0xFF, 0xC5, 0xFD, 0x00]));
+        service.parse(&frame(
+            0x1CECFF80,
+            vec![0x20, 0x0C, 0x00, 0x02, 0xFF, 0xC5, 0xFD, 0x00],
+        ));
         assert_eq!(service.active_sessions(), 1);
 
         // 2.5 s 无新包 → 超时丢弃 1 个会话。
@@ -628,18 +664,27 @@ mod tests {
     #[test]
     fn session_survives_below_timeout_threshold() {
         let mut service = J1939Service::with_timeout(2000);
-        service.parse(&frame(0x1CECFF80, vec![0x20, 0x0C, 0x00, 0x02, 0xFF, 0xC5, 0xFD, 0x00]));
+        service.parse(&frame(
+            0x1CECFF80,
+            vec![0x20, 0x0C, 0x00, 0x02, 0xFF, 0xC5, 0xFD, 0x00],
+        ));
 
         assert_eq!(service.tick(1000), 0);
         assert_eq!(service.active_sessions(), 1);
 
         // 第一包到达, 重组继续。
         let res = service
-            .parse(&frame(0x1CEBFF80, vec![0x01, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F, 0x10]))
+            .parse(&frame(
+                0x1CEBFF80,
+                vec![0x01, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F, 0x10],
+            ))
             .unwrap();
         assert!(matches!(
             res,
-            J1939Message::Transport { reassembled: None, .. }
+            J1939Message::Transport {
+                reassembled: None,
+                ..
+            }
         ));
     }
 }
