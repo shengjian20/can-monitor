@@ -10,5 +10,7 @@ can-usbvci = { path = "../can-usbvci" }
 canopen-stack = { path = "../canopen-stack" }
 j1939-stack = { path = "../j1939-stack" }
 can-monitor-core = { path = "../can-monitor-core" }
+can-monitor-server = { path = "../can-monitor-server" }
+tokio = { version = "1", features = ["rt-multi-thread"] }
 ratatui = "=0.30.2"
 crossterm = "0.28"

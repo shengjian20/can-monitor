@@ -10,8 +10,8 @@ use std::time::Duration;
 
 use can_monitor_core::bus::MonitorBus;
 use can_monitor_core::classifier::FrameClassifier;
-use can_server::serve_listener;
-use can_server::FrameJson;
+use can_monitor_server::serve_listener;
+use can_monitor_server::FrameJson;
 use can_types::{BackendConfig, BackendKind, CanBackend, CanError, CanFrame, CanId};
 use futures_util::StreamExt;
 use tokio::net::TcpListener;
@@ -86,7 +86,7 @@ async fn ws_pushes_batched_frames_matching_contract() {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let bus = Arc::new(bus);
-    let server = tokio::spawn(serve_listener(listener, Arc::clone(&bus)));
+    let server = tokio::spawn(serve_listener(listener, Arc::clone(&bus), false));
 
     // tokio-tungstenite 客户端连 /ws。
     let url = format!("ws://{addr}/ws");

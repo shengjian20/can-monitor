@@ -34,8 +34,6 @@ use std::time::Duration;
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::State;
 use axum::response::Response;
-use axum::routing::get;
-use axum::Router;
 use can_monitor_core::bus::MonitorBus;
 use can_monitor_core::classifier::StreamItem;
 use crossbeam_channel::{Receiver, RecvTimeoutError};
@@ -44,6 +42,7 @@ use tokio::sync::mpsc::error::TrySendError;
 use tokio::time::{interval, MissedTickBehavior};
 
 use crate::frame::{frame_to_json, BatchCollector, FrameJson};
+use crate::AppState;
 
 /// 批量刷出间隔 (与 Web 端 30ms 渲染帧率匹配, 兼顾实时性与批处理开销)。
 const FLUSH_INTERVAL: Duration = Duration::from_millis(30);
@@ -54,20 +53,16 @@ const BRIDGE_QUEUE_CAPACITY: usize = 256;
 /// 桥接线程阻塞读 crossbeam 的超时 (近似"非阻塞"轮询语义, 可及时感知断开)。
 const BRIDGE_POLL_TIMEOUT: Duration = Duration::from_millis(30);
 
-/// 构造带 `/ws` 路由的服务 Router (共享总线作为 axum State)。
-///
-/// @param bus 共享的消息总线 (读侧订阅广播流)。
-/// @return 已注入状态的 axum [`Router`]。
-pub fn router(bus: Arc<MonitorBus>) -> Router {
-    Router::new().route("/ws", get(ws_handler)).with_state(bus)
-}
-
 /// `GET /ws` 升级处理器。
 ///
 /// 把连接升级为 WebSocket 后, 在独立任务中运行会话循环
 /// (升级回调由 axum 经 `tokio::spawn` 分离执行, 不阻塞请求处理)。
-async fn ws_handler(State(bus): State<Arc<MonitorBus>>, ws: WebSocketUpgrade) -> Response {
-    ws.on_upgrade(move |socket| ws_session(socket, bus))
+///
+/// @param state 共享应用状态 (取其中的总线读侧订阅广播流)。
+/// @param ws    WebSocket 升级请求。
+/// @return 升级响应 (或拒绝升级)。
+pub(crate) async fn ws_handler(State(state): State<AppState>, ws: WebSocketUpgrade) -> Response {
+    ws.on_upgrade(move |socket| ws_session(socket, state.bus))
 }
 
 /// 单个 WS 会话: 建桥接线程 + 运行攒批转发循环。

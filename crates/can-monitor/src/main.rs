@@ -28,6 +28,8 @@ fn main() {
 
 fn run(cli: CliArgs) -> Result<(), Box<dyn std::error::Error>> {
     let (bus, rx, err_rx) = MonitorBus::new();
+    // Arc 共享: TUI App 与 Web 服务 (--web-write) 持有同一总线实例。
+    let bus = Arc::new(bus);
     let classifier = Arc::new(Mutex::new(FrameClassifier::default()));
 
     let (backend_name, iface_name) = match cli.backend.as_str() {
@@ -62,7 +64,7 @@ fn run(cli: CliArgs) -> Result<(), Box<dyn std::error::Error>> {
     };
 
     let filter = FrameFilter::new();
-    let mut app = App::new(bus, rx, err_rx, filter);
+    let mut app = App::new(Arc::clone(&bus), rx, err_rx, filter);
     app.set_backend_name(backend_name);
     app.set_iface_name(iface_name);
 
@@ -72,9 +74,46 @@ fn run(cli: CliArgs) -> Result<(), Box<dyn std::error::Error>> {
         app.set_logger(logger);
     }
 
+    // Web 服务: 仅 `--web-write` 时启动; `--web-port` 提供时先校验 (Metis 安全锁定)。
+    // 校验总是执行 (即便未启动服务), 非法地址立即报错退出。
+    if cli.web_write || cli.web_port.is_some() {
+        let addr_str = cli.web_port.as_deref().unwrap_or("127.0.0.1:8080");
+        let addr = can_monitor_server::parse_bind_addr(addr_str)
+            .map_err(|e| format!("--web-port 无效: {e}"))?;
+        if cli.web_write {
+            spawn_web_server(addr, Arc::clone(&bus), cli.web_write);
+        }
+    }
+
     app.run()?;
 
     // 干净退出: 冲刷日志缓冲并关闭文件, 避免丢缓冲 (Task 21 实测发现)。
     app.close_logger()?;
     Ok(())
+}
+
+/// 在后台线程启动 tokio runtime + axum Web 服务。
+///
+/// 独立多线程 runtime (enable_all) 与 TUI 主线程解耦; 服务绑定失败仅打印
+/// 错误, 不中断 TUI (WS / REST / 静态文件同一 Router)。
+///
+/// @param addr          监听地址 (已通过回环校验)。
+/// @param bus           共享消息总线 (与 TUI 同持 Arc)。
+/// @param write_enabled 写门控 (--web-write 时为真)。
+fn spawn_web_server(addr: std::net::SocketAddr, bus: Arc<MonitorBus>, write_enabled: bool) {
+    std::thread::spawn(move || {
+        let rt = match tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+        {
+            Ok(rt) => rt,
+            Err(e) => {
+                eprintln!("创建 Web 服务 tokio runtime 失败: {e}");
+                return;
+            }
+        };
+        if let Err(e) = rt.block_on(can_monitor_server::serve(addr, bus, write_enabled)) {
+            eprintln!("Web 服务错误 ({addr}): {e}");
+        }
+    });
 }

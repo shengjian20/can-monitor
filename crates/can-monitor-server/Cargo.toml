@@ -1,8 +1,8 @@
 [package]
-name = "can-server"
+name = "can-monitor-server"
 version = "0.1.0"
 edition = "2021"
-description = "CAN 监控 Web 服务 (axum HTTP + WebSocket 批量帧流)"
+description = "CAN 监控 Web 服务 (axum REST + WebSocket 批量帧流)"
 
 [dependencies]
 axum = { version = "0.8", features = ["ws"] }
@@ -10,13 +10,15 @@ tokio = { version = "1", features = ["rt-multi-thread", "sync", "time", "macros"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 crossbeam-channel = "0.5"
+tower-http = { version = "0.6", features = ["fs"] }
 can-monitor-core = { path = "../can-monitor-core" }
 can-types = { path = "../can-types" }
-
-# can-devices 由 T16 (REST 设备列表 / send / start / stop) 接入, 本任务不需要。
+can-devices = { path = "../can-devices" }
 
 [dev-dependencies]
 tokio-tungstenite = "0.30"
 futures-util = "0.3"
+tower = { version = "0.5", features = ["util"] }
+http-body-util = "0.1"
 canopen-stack = { path = "../canopen-stack" }
 j1939-stack = { path = "../j1939-stack" }

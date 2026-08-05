@@ -21,6 +21,7 @@
 
 use std::collections::VecDeque;
 use std::io;
+use std::sync::Arc;
 use std::time::Duration;
 
 use can_monitor_core::bus::MonitorBus;
@@ -65,8 +66,8 @@ pub struct DisplayMessage {
 /// **不持有帧分类器**: 分类已在 reader 线程完成一次, 本层只消费
 /// [`StreamItem`] 中携带的 [`StreamItem::parsed`]。
 pub struct App {
-    /// 消息总线 (监控开关控制)。
-    bus: MonitorBus,
+    /// 消息总线 (监控开关控制; Arc 共享, 与 Web 服务同持)。
+    bus: Arc<MonitorBus>,
     /// 消息接收端 (元素为 reader 已分类一次的 [`StreamItem`])。
     rx: Receiver<StreamItem>,
     /// 错误接收端。
@@ -103,13 +104,13 @@ impl App {
     /// 监控开关初始为**关闭**。本层不持有帧分类器: 流元素已在 reader 线程
     /// 分类一次, 此处只接收 [`StreamItem`]。
     ///
-    /// @param bus        消息总线。
+    /// @param bus        消息总线 (Arc 共享, TUI 与 Web 服务同持)。
     /// @param rx         消息接收端 (元素为已分类的 [`StreamItem`])。
     /// @param err_rx     错误接收端。
     /// @param filter     帧过滤器。
     /// @return 应用实例。
     pub fn new(
-        bus: MonitorBus,
+        bus: Arc<MonitorBus>,
         rx: Receiver<StreamItem>,
         err_rx: Receiver<String>,
         filter: FrameFilter,
@@ -464,7 +465,7 @@ mod tests {
     fn app_default_monitoring_off() {
         let (bus, rx, err_rx) = MonitorBus::new();
         let filter = FrameFilter::new();
-        let app = App::new(bus, rx, err_rx, filter);
+        let app = App::new(Arc::new(bus), rx, err_rx, filter);
         assert!(!app.is_monitoring());
     }
 
@@ -473,7 +474,7 @@ mod tests {
     fn app_default_no_logger() {
         let (bus, rx, err_rx) = MonitorBus::new();
         let filter = FrameFilter::new();
-        let app = App::new(bus, rx, err_rx, filter);
+        let app = App::new(Arc::new(bus), rx, err_rx, filter);
         assert!(app.logger.is_none());
         assert!(!app.logging_enabled);
     }
@@ -483,7 +484,7 @@ mod tests {
     fn app_default_backend_info() {
         let (bus, rx, err_rx) = MonitorBus::new();
         let filter = FrameFilter::new();
-        let app = App::new(bus, rx, err_rx, filter);
+        let app = App::new(Arc::new(bus), rx, err_rx, filter);
         assert_eq!(app.backend_name, "None");
         assert_eq!(app.iface_name, "can0");
     }
@@ -493,7 +494,7 @@ mod tests {
     fn app_set_backend_and_iface() {
         let (bus, rx, err_rx) = MonitorBus::new();
         let filter = FrameFilter::new();
-        let mut app = App::new(bus, rx, err_rx, filter);
+        let mut app = App::new(Arc::new(bus), rx, err_rx, filter);
         app.set_backend_name("SocketCAN".to_string());
         app.set_iface_name("vcan0".to_string());
         assert_eq!(app.backend_name, "SocketCAN");
@@ -505,7 +506,7 @@ mod tests {
     fn key_f_toggles_filter() {
         let (bus, rx, err_rx) = MonitorBus::new();
         let filter = FrameFilter::new();
-        let mut app = App::new(bus, rx, err_rx, filter);
+        let mut app = App::new(Arc::new(bus), rx, err_rx, filter);
 
         // 初始: 过滤关闭。
         assert!(!app.filter.is_enabled());
@@ -528,7 +529,7 @@ mod tests {
     fn key_l_no_logger_noop() {
         let (bus, rx, err_rx) = MonitorBus::new();
         let filter = FrameFilter::new();
-        let mut app = App::new(bus, rx, err_rx, filter);
+        let mut app = App::new(Arc::new(bus), rx, err_rx, filter);
 
         let key_l = KeyEvent::new(KeyCode::Char('l'), crossterm::event::KeyModifiers::NONE);
         app.handle_key(key_l);
@@ -541,7 +542,7 @@ mod tests {
     fn key_l_with_logger_toggles() {
         let (bus, rx, err_rx) = MonitorBus::new();
         let filter = FrameFilter::new();
-        let mut app = App::new(bus, rx, err_rx, filter);
+        let mut app = App::new(Arc::new(bus), rx, err_rx, filter);
 
         // 挂载 logger (临时文件)。
         let path = std::env::temp_dir().join(format!("test-{}-key_l.log", std::process::id()));
@@ -573,7 +574,7 @@ mod tests {
     fn key_x_no_panic() {
         let (bus, rx, err_rx) = MonitorBus::new();
         let filter = FrameFilter::new();
-        let mut app = App::new(bus, rx, err_rx, filter);
+        let mut app = App::new(Arc::new(bus), rx, err_rx, filter);
 
         let key_x = KeyEvent::new(KeyCode::Char('x'), crossterm::event::KeyModifiers::NONE);
         app.handle_key(key_x);
@@ -597,7 +598,7 @@ mod tests {
         .unwrap();
 
         let filter = FrameFilter::new();
-        let mut app = App::new(bus, rx, err_rx, filter);
+        let mut app = App::new(Arc::new(bus), rx, err_rx, filter);
         app.set_iface_name("vcan0".to_string());
 
         app.bus.set_monitoring(true);
