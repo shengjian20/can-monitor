@@ -1,0 +1,171 @@
+/* ── FrameTable 虚拟滚动 + 协议高亮 ──────────────────────────────
+ *
+ * 依赖 App.css 的设计令牌 (--bg-*, --text-*, --sp-*, --border, --radius, --font-mono)。
+ * 协议高亮色在本文件定义 (不污染全局 :root)。
+ *
+ * 行高固定 28px, 虚拟滚动只渲染可视区 ± BUFFER 行。
+ */
+
+/* ── 协议高亮色 (行左边色条) ────────────────────────────────────── */
+
+.frame-table {
+  /* CANopen 子协议色 */
+  --hl-heartbeat: #3fb950;  /* 心跳 — 绿 */
+  --hl-sdo: #d29922;        /* SDO   — 黄 */
+  --hl-pdo: #58a6ff;        /* TPDO/RPDO — 蓝 */
+  --hl-nmt: #d18616;        /* NMT   — 橙 */
+  /* 其他协议 */
+  --hl-j1939: #39d2c0;      /* J1939 — 青 */
+  --hl-raw: #484f58;        /* Raw   — 灰 (同 --text-muted) */
+}
+
+/* ── 容器 ──────────────────────────────────────────────────────── */
+
+.frame-table-container {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  position: relative;
+}
+
+.frame-table-scroll {
+  flex: 1;
+  overflow-y: auto;
+  overflow-x: auto;
+}
+
+/* ── 表格 ──────────────────────────────────────────────────────── */
+
+.frame-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+  table-layout: fixed;
+}
+
+.frame-table thead {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+}
+
+.frame-table th {
+  padding: var(--sp-2) var(--sp-3);
+  text-align: left;
+  font-weight: 600;
+  color: var(--text-secondary);
+  background: var(--bg-secondary);
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+}
+
+/* 列宽比例 — 与虚拟滚动的 table-layout: fixed 配合 */
+.frame-table .col-ts      { width: 140px; }
+.frame-table .col-id      { width: 90px; }
+.frame-table .col-dir     { width: 50px; }
+.frame-table .col-data    { width: auto; }
+.frame-table .col-proto   { width: 80px; }
+.frame-table .col-summary { width: auto; min-width: 120px; }
+
+/* ── 行 ────────────────────────────────────────────────────────── */
+
+.frame-table td {
+  padding: var(--sp-1) var(--sp-3);
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.frame-table tr:hover td {
+  background: var(--bg-tertiary);
+}
+
+/* 方向色 */
+.row-tx td {
+  color: var(--yellow);
+}
+.row-rx td {
+  color: var(--text-primary);
+}
+
+/* 列样式 */
+.col-ts {
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+.col-id {
+  color: var(--accent);
+  font-weight: 500;
+}
+
+.col-dir {
+  font-weight: 600;
+  font-size: 11px;
+}
+
+.col-data {
+  font-family: var(--font-mono);
+  letter-spacing: 0.5px;
+}
+
+.col-proto {
+  font-size: 11px;
+}
+
+.col-summary {
+  color: var(--text-secondary);
+  font-size: 11px;
+}
+
+/* ── 协议高亮行 (左边色条) ────────────────────────────────────── */
+
+/* 色条: 用 box-shadow 模拟左边 3px 色条, 不影响布局 */
+.hl-heartbeat td:first-child {
+  box-shadow: inset 3px 0 0 var(--hl-heartbeat);
+}
+.hl-heartbeat .col-proto { color: var(--hl-heartbeat); }
+
+.hl-sdo td:first-child {
+  box-shadow: inset 3px 0 0 var(--hl-sdo);
+}
+.hl-sdo .col-proto { color: var(--hl-sdo); }
+
+.hl-pdo td:first-child {
+  box-shadow: inset 3px 0 0 var(--hl-pdo);
+}
+.hl-pdo .col-proto { color: var(--hl-pdo); }
+
+.hl-nmt td:first-child {
+  box-shadow: inset 3px 0 0 var(--hl-nmt);
+}
+.hl-nmt .col-proto { color: var(--hl-nmt); }
+
+.hl-j1939 td:first-child {
+  box-shadow: inset 3px 0 0 var(--hl-j1939);
+}
+.hl-j1939 .col-proto { color: var(--hl-j1939); }
+
+.hl-raw td:first-child {
+  box-shadow: inset 3px 0 0 var(--hl-raw);
+}
+.hl-raw .col-proto { color: var(--hl-raw); }
+
+/* ── 空态 ──────────────────────────────────────────────────────── */
+
+.frame-table-empty {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-muted);
+  font-size: 14px;
+}
+
+/* ── 虚拟滚动占位 (spacer) ────────────────────────────────────── */
+
+.frame-table-spacer {
+  height: 0;
+}

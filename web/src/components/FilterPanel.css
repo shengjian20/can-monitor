@@ -1,0 +1,96 @@
+/* ── FilterPanel 过滤面板 ───────────────────────────────────────
+ *
+ * 水平工具条: 协议下拉 + 方向切换 + 清空按钮。
+ * 依赖 App.css 的设计令牌。
+ */
+
+.filter-panel {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  padding: var(--sp-2) var(--sp-4);
+  background: var(--bg-secondary);
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+  font-size: 12px;
+}
+
+.filter-panel label {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-1);
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+
+.filter-panel select {
+  padding: var(--sp-1) var(--sp-2);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--text-primary);
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  outline: none;
+  cursor: pointer;
+}
+
+.filter-panel select:focus {
+  border-color: var(--accent);
+}
+
+/* ── 方向切换按钮组 ──────────────────────────────────────────── */
+
+.dir-group {
+  display: flex;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+
+.dir-btn {
+  padding: var(--sp-1) var(--sp-2);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--text-secondary);
+  background: var(--bg-tertiary);
+  border: none;
+  border-right: 1px solid var(--border);
+  cursor: pointer;
+  transition: color 0.15s, background 0.15s;
+}
+
+.dir-btn:last-child {
+  border-right: none;
+}
+
+.dir-btn:hover {
+  color: var(--text-primary);
+}
+
+.dir-btn.active {
+  color: var(--accent);
+  background: var(--bg-primary);
+}
+
+/* ── 清空按钮 ────────────────────────────────────────────────── */
+
+.filter-clear {
+  margin-left: auto;
+  padding: var(--sp-1) var(--sp-2);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--text-secondary);
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  cursor: pointer;
+  transition: color 0.15s, border-color 0.15s;
+}
+
+.filter-clear:hover {
+  color: var(--red);
+  border-color: var(--red);
+}
