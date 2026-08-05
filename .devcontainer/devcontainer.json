@@ -1,0 +1,30 @@
+{
+	"name": "can-monitor-dev",
+	"build": {
+		"dockerfile": "Dockerfile"
+	},
+	"workspaceFolder": "/workspaces/can_monitor",
+	"runArgs": [
+		"--cap-add=NET_ADMIN",
+		"--device=/dev/bus/usb"
+	],
+	"mounts": [
+		{
+			"source": "${localWorkspaceFolder}/third_party",
+			"target": "/workspaces/can_monitor/third_party",
+			"type": "bind"
+		}
+	],
+	"customizations": {
+		"vscode": {
+			"extensions": [
+				"rust-lang.rust-analyzer",
+				"tamasfe.even-better-toml",
+				"vadimcn.vscode-lldb",
+				"serayuzgur.crates"
+			]
+		}
+	},
+	"postCreateCommand": "bash /workspaces/can_monitor/scripts/vcan-setup.sh || true",
+	"remoteUser": "vscode"
+}

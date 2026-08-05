@@ -1,0 +1,16 @@
+# Cargo 交叉编译配置
+#
+# 目标平台: aarch64 (64 位 ARM), Ubuntu 16.04, glibc 2.23 (测试机 jz@172.22.2.242)
+#
+# 注意: 本任务使用 cargo-zigbuild 进行交叉编译, zigbuild 会自行处理 linker 与
+# glibc 版本探测 (通过 target triple 后缀 .2.23 指定 glibc 版本)。
+# 因此这里不需要 (也不应该) 手动配置 linker = "zig" / rustflags,
+# 否则可能与 zigbuild 的自动配置冲突。
+#
+# 若未来脱离 zigbuild 而手动 zig link (zig cc 直连), 可启用下方被注释的配置:
+#
+# [target.aarch64-unknown-linux-gnu]
+# linker = "zig"
+# rustflags = ["-C", "link-arg=-target", "-C", "link-arg=aarch64-linux-gnu.2.23"]
+#
+# 当前保持最小配置 (留空): zigbuild 自动完成 linker 与 glibc 版本处理。
