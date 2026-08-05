@@ -1,0 +1,382 @@
+//! # 消息总线
+//!
+//! 在后台 reader 线程中持续从后端读帧、分类, 并通过**有界** channel 投递给
+//! 上层 (TUI 层), 同时维护监控开关与各类计数器。
+//!
+//! ## 监控开关语义
+//!
+//! 监控开关 **默认关闭**: reader 线程只在 [`MonitorBus::set_monitoring`] 显式
+//! 开启后才开始消费后端帧; 关闭时线程休眠轮询开关, **不触碰后端**。投递
+//! channel 采用有界容量, 满时发送阻塞即天然背压, 不会因无人消费而无界增长。
+
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
+use std::thread;
+use std::time::Duration;
+
+use can_types::{BackendKind, CanBackend, CanError, CanMessage, Direction};
+use crossbeam_channel::{Receiver, Sender};
+
+use crate::classifier::{FrameClassifier, ParsedMessage};
+
+/// 消息投递 channel 容量 (有界, 防止无界增长导致内存泄漏)。
+const CHANNEL_CAPACITY: usize = 1024;
+/// 错误 channel 容量。
+const ERROR_CHANNEL_CAPACITY: usize = 64;
+/// reader 单次读帧阻塞上限。
+const READ_TIMEOUT: Duration = Duration::from_millis(100);
+/// 监控关闭时线程轮询开关的休眠间隔。
+const POLL_INTERVAL: Duration = Duration::from_millis(20);
+
+/// 消息总线。
+///
+/// 由 [`MonitorBus::new`] 创建, 返回总线本体与供消费的两条 channel 接收端:
+/// - `Receiver<CanMessage>`: 已分类转发的统一消息流;
+/// - `Receiver<String>`: reader 线程遇到的后端错误描述。
+///
+/// 总线本身不依赖具体后端: reader 线程通过 [`CanBackend`] trait 泛型接入。
+pub struct MonitorBus {
+    /// 消息投递发送端。
+    tx: Sender<CanMessage>,
+    /// 消息接收端 (保留所有权, 使 channel 持续存活)。
+    _rx: Receiver<CanMessage>,
+    /// 错误投递发送端。
+    err_tx: Sender<String>,
+    /// 监控开关 (默认关闭)。
+    running: Arc<AtomicBool>,
+    /// 线程停机标志 (置真后 reader 线程退出)。
+    shutdown: Arc<AtomicBool>,
+    /// 已读帧总数。
+    total_frames: Arc<AtomicU64>,
+    /// 已识别为 CANopen 的帧数。
+    canopen_count: Arc<AtomicU64>,
+    /// 已识别为 J1939 的帧数。
+    j1939_count: Arc<AtomicU64>,
+    /// 后端错误数。
+    error_count: Arc<AtomicU64>,
+}
+
+impl MonitorBus {
+    /// 创建消息总线。
+    ///
+    /// 监控开关初始为**关闭** (需 [`MonitorBus::set_monitoring`] 显式开启);
+    /// 各计数器归零。
+    ///
+    /// @return 三元组: (总线, 消息接收端, 错误接收端)。
+    pub fn new() -> (MonitorBus, Receiver<CanMessage>, Receiver<String>) {
+        let (tx, rx) = crossbeam_channel::bounded(CHANNEL_CAPACITY);
+        let (err_tx, err_rx) = crossbeam_channel::bounded(ERROR_CHANNEL_CAPACITY);
+        (
+            MonitorBus {
+                tx,
+                _rx: rx.clone(),
+                err_tx,
+                running: Arc::new(AtomicBool::new(false)),
+                shutdown: Arc::new(AtomicBool::new(false)),
+                total_frames: Arc::new(AtomicU64::new(0)),
+                canopen_count: Arc::new(AtomicU64::new(0)),
+                j1939_count: Arc::new(AtomicU64::new(0)),
+                error_count: Arc::new(AtomicU64::new(0)),
+            },
+            rx,
+            err_rx,
+        )
+    }
+
+    /// 启动后台 reader 线程。
+    ///
+    /// 线程循环行为:
+    /// - **监控关闭**时休眠轮询开关, 不读取后端 (不消费帧);
+    /// - **监控开启**时以 [`READ_TIMEOUT`] 阻塞读一帧, 分类后封装为
+    ///   [`CanMessage`] (方向恒为 [`Direction::Rx`]) 投递到消息 channel,
+    ///   并累计对应计数器;
+    /// - 读取**超时** ([`CanError::Timeout`]) 视为正常, 直接继续下一轮;
+    /// - 其他**后端错误**累计 `error_count` 并写入错误 channel 后继续。
+    ///
+    /// 调用 [`MonitorBus::shutdown`] 后线程在下一个循环检查点退出。
+    ///
+    /// @param backend    已打开的后端 (线程取得所有权)。
+    /// @param classifier 共享的帧分类器 (线程内加锁串行使用)。
+    /// @param source     消息来源后端种类 (标记在每条消息上)。
+    pub fn start_reader<B>(
+        &self,
+        backend: B,
+        classifier: Arc<Mutex<FrameClassifier>>,
+        source: BackendKind,
+    ) where
+        B: CanBackend + Send + 'static,
+    {
+        let tx = self.tx.clone();
+        let err_tx = self.err_tx.clone();
+        let running = Arc::clone(&self.running);
+        let shutdown = Arc::clone(&self.shutdown);
+        let total = Arc::clone(&self.total_frames);
+        let canopen = Arc::clone(&self.canopen_count);
+        let j1939 = Arc::clone(&self.j1939_count);
+        let errors = Arc::clone(&self.error_count);
+
+        thread::Builder::new()
+            .name("can-monitor-reader".to_string())
+            .spawn(move || {
+                let mut backend = backend;
+                while !shutdown.load(Ordering::Relaxed) {
+                    if !running.load(Ordering::Relaxed) {
+                        // 监控关闭: 休眠等待, 不消费后端帧。
+                        thread::sleep(POLL_INTERVAL);
+                        continue;
+                    }
+                    match backend.read_frame(READ_TIMEOUT) {
+                        Ok(frame) => {
+                            total.fetch_add(1, Ordering::Relaxed);
+                            let parsed = classifier
+                                .lock()
+                                .unwrap_or_else(|poison| poison.into_inner())
+                                .classify(&frame);
+                            match &parsed {
+                                ParsedMessage::Canopen { .. } => {
+                                    canopen.fetch_add(1, Ordering::Relaxed);
+                                }
+                                ParsedMessage::J1939 { .. } => {
+                                    j1939.fetch_add(1, Ordering::Relaxed);
+                                }
+                                ParsedMessage::Raw(_) => {}
+                            }
+                            let msg = CanMessage::new(frame, source, Direction::Rx);
+                            // 有界 channel: 满时阻塞即天然背压, 不无界堆积。
+                            let _ = tx.send(msg);
+                        }
+                        Err(CanError::Timeout) => {
+                            // 超时是正常现象, 继续下一轮。
+                        }
+                        Err(e) => {
+                            errors.fetch_add(1, Ordering::Relaxed);
+                            let _ = err_tx.try_send(format!("后端读取错误: {e}"));
+                        }
+                    }
+                }
+            })
+            .expect("启动 reader 线程失败");
+    }
+
+    /// 设置监控开关。
+    ///
+    /// @param enabled 开启 (`true`) 后 reader 线程开始消费后端帧; 关闭
+    ///                (`false`) 后线程休眠, 不再读取后端。
+    pub fn set_monitoring(&self, enabled: bool) {
+        self.running.store(enabled, Ordering::Relaxed);
+    }
+
+    /// 查询监控开关状态。
+    ///
+    /// @return `true` 表示正在监控。
+    pub fn is_monitoring(&self) -> bool {
+        self.running.load(Ordering::Relaxed)
+    }
+
+    /// 请求 reader 线程退出。
+    ///
+    /// 置位停机标志, reader 线程在下一个循环检查点退出。
+    pub fn shutdown(&self) {
+        self.shutdown.store(true, Ordering::Relaxed);
+    }
+
+    /// 已读帧总数。
+    ///
+    /// @return 自启动以来成功从后端读到的帧数。
+    pub fn total_frames(&self) -> u64 {
+        self.total_frames.load(Ordering::Relaxed)
+    }
+
+    /// 已识别为 CANopen 的帧数。
+    ///
+    /// @return 分类为 [`ParsedMessage::Canopen`] 的帧数。
+    pub fn canopen_count(&self) -> u64 {
+        self.canopen_count.load(Ordering::Relaxed)
+    }
+
+    /// 已识别为 J1939 的帧数。
+    ///
+    /// @return 分类为 [`ParsedMessage::J1939`] 的帧数。
+    pub fn j1939_count(&self) -> u64 {
+        self.j1939_count.load(Ordering::Relaxed)
+    }
+
+    /// 后端错误数。
+    ///
+    /// @return 读取后端时发生非超时错误的次数。
+    pub fn error_count(&self) -> u64 {
+        self.error_count.load(Ordering::Relaxed)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use can_types::{BackendConfig, CanFrame};
+    use std::collections::VecDeque;
+    use std::time::Instant;
+
+    /// 构造标准帧。
+    fn frame(id: u16, data: &[u8]) -> CanFrame {
+        CanFrame::new(can_types::CanId::new_standard(id).unwrap(), data.to_vec()).unwrap()
+    }
+
+    /// 构造扩展帧。
+    fn frame_ext(id: u32, data: &[u8]) -> CanFrame {
+        CanFrame::new(can_types::CanId::new_extended(id).unwrap(), data.to_vec()).unwrap()
+    }
+
+    /// 等待条件成立 (带 5 秒超时, 避免测试挂死)。
+    fn wait_until(cond: impl FnMut() -> bool) {
+        let mut cond = cond;
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !cond() {
+            assert!(Instant::now() < deadline, "等待条件超时");
+            thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    /// 测试桩后端: 按队列依次返回预置帧 (或错误), 队列空时阻塞到超时。
+    #[derive(Clone)]
+    struct MockBackend {
+        frames: Arc<Mutex<VecDeque<can_types::Result<CanFrame>>>>,
+    }
+
+    impl MockBackend {
+        /// 用预置帧序列构造测试桩。
+        fn new(frames: Vec<can_types::Result<CanFrame>>) -> Self {
+            Self {
+                frames: Arc::new(Mutex::new(frames.into_iter().collect())),
+            }
+        }
+
+        /// 向队列尾部追加一条结果 (帧或错误)。
+        fn push(&self, result: can_types::Result<CanFrame>) {
+            self.frames.lock().unwrap().push_back(result);
+        }
+
+        /// 队列中剩余可读的结果数量。
+        fn remaining(&self) -> usize {
+            self.frames.lock().unwrap().len()
+        }
+    }
+
+    impl CanBackend for MockBackend {
+        fn open(_config: &BackendConfig) -> can_types::Result<Self> {
+            Ok(Self {
+                frames: Arc::new(Mutex::new(VecDeque::new())),
+            })
+        }
+
+        fn read_frame(&mut self, timeout: Duration) -> can_types::Result<CanFrame> {
+            let mut q = self.frames.lock().unwrap();
+            match q.pop_front() {
+                Some(result) => result,
+                None => {
+                    drop(q);
+                    thread::sleep(timeout);
+                    Err(CanError::Timeout)
+                }
+            }
+        }
+
+        fn write_frame(&mut self, _frame: &CanFrame) -> can_types::Result<()> {
+            Ok(())
+        }
+
+        fn close(&mut self) -> can_types::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// 监控开关默认关闭, 计数器归零。
+    #[test]
+    fn default_monitoring_off() {
+        let (bus, _rx, _err_rx) = MonitorBus::new();
+        assert!(!bus.is_monitoring());
+        assert_eq!(bus.total_frames(), 0);
+        assert_eq!(bus.canopen_count(), 0);
+        assert_eq!(bus.j1939_count(), 0);
+        assert_eq!(bus.error_count(), 0);
+    }
+
+    /// set_monitoring 开关切换生效。
+    #[test]
+    fn monitoring_switch_toggles() {
+        let (bus, _rx, _err_rx) = MonitorBus::new();
+        bus.set_monitoring(true);
+        assert!(bus.is_monitoring());
+        bus.set_monitoring(false);
+        assert!(!bus.is_monitoring());
+    }
+
+    /// 开启监控后 reader 消费帧并正确分类; 关闭后停止消费, 计数冻结。
+    #[test]
+    fn reader_consumes_and_stops() {
+        let (bus, rx, _err_rx) = MonitorBus::new();
+        let backend = MockBackend::new(vec![
+            Ok(frame(0x181, &[1, 2, 3])),    // CANopen TPDO1
+            Ok(frame_ext(0x18FEF100, &[1])), // J1939 (PGN 0xFEF1)
+            Ok(frame(0x101, &[1])),          // 未知 11 位 → Raw
+        ]);
+        let classifier = Arc::new(Mutex::new(FrameClassifier::default()));
+        bus.start_reader(backend.clone(), classifier, BackendKind::SocketCan);
+
+        // 默认关闭: 不应消费任何帧。
+        thread::sleep(Duration::from_millis(200));
+        assert_eq!(bus.total_frames(), 0);
+        assert_eq!(backend.remaining(), 3);
+
+        // 开启监控: 消费全部 3 帧并送达消息 channel。
+        bus.set_monitoring(true);
+        wait_until(|| rx.len() >= 3);
+
+        assert_eq!(bus.total_frames(), 3);
+        assert_eq!(bus.canopen_count(), 1);
+        assert_eq!(bus.j1939_count(), 1);
+        assert_eq!(bus.error_count(), 0);
+        assert_eq!(backend.remaining(), 0);
+
+        // 校验消息内容。
+        let received: Vec<CanMessage> = rx.try_iter().collect();
+        assert_eq!(received.len(), 3);
+        assert_eq!(received[0].frame.id().raw_id(), 0x181);
+        assert_eq!(received[0].source, BackendKind::SocketCan);
+        assert_eq!(received[0].direction, Direction::Rx);
+
+        // 关闭监控: 追加帧不被消费, 计数冻结。
+        bus.set_monitoring(false);
+        backend.push(Ok(frame_ext(0x18F00480, &[9, 9])));
+        backend.push(Ok(frame(0x181, &[7])));
+        thread::sleep(Duration::from_millis(200));
+        assert_eq!(bus.total_frames(), 3);
+        assert_eq!(backend.remaining(), 2);
+
+        bus.shutdown();
+    }
+
+    /// 后端错误会计数并写入错误 channel, 随后仍能继续读帧。
+    #[test]
+    fn backend_errors_are_reported() {
+        let (bus, rx, err_rx) = MonitorBus::new();
+        let backend = MockBackend::new(vec![
+            Err(CanError::BusError),
+            Ok(frame_ext(0x18F00480, &[1, 2])),
+        ]);
+        let classifier = Arc::new(Mutex::new(FrameClassifier::default()));
+        bus.start_reader(backend, classifier, BackendKind::UsbVci);
+
+        bus.set_monitoring(true);
+        wait_until(|| !rx.is_empty());
+
+        assert_eq!(bus.error_count(), 1);
+        assert_eq!(bus.total_frames(), 1);
+        assert_eq!(bus.j1939_count(), 1);
+
+        let errs: Vec<String> = err_rx.try_iter().collect();
+        assert_eq!(errs.len(), 1);
+        assert!(errs[0].contains("总线错误"));
+
+        bus.shutdown();
+    }
+}

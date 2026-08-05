@@ -36,6 +36,14 @@ fn vendor_lib_dir(vendor_root: &Path) -> PathBuf {
 }
 
 fn main() {
+    // mock feature: 不链接真实 controlcan 库 (cargo 对启用的 feature 注入 CARGO_FEATURE_<NAME> 环境变量),
+    // 使 `cargo test --features mock` 在没有供应商库 / 无硬件的主机上也能构建运行 (MockVciOps 桩不引用 FFI 符号)。
+    if env::var("CARGO_FEATURE_MOCK").is_ok() {
+        println!("cargo:rerun-if-env-changed=CARGO_FEATURE_MOCK");
+        println!("can-usbvci: mock feature 已启用, 跳过真实 controlcan 库链接");
+        return;
+    }
+
     // 供应商库根目录 = workspace 根 (CARGO_MANIFEST_DIR/../..) + third_party/controlcan
     let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").expect("cargo 未设置 CARGO_MANIFEST_DIR"));
     let vendor_root = manifest_dir

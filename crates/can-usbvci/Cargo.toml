@@ -5,3 +5,9 @@ edition = "2021"
 description = "ZLGCAN (周立功) USBCAN 系列 USB-CAN 适配器的 VCI FFI 绑定层"
 
 [dependencies]
+can-types = { path = "../can-types" }
+
+[features]
+# mock 测试用 (不链接真实 controlcan 库, 用 MockVciOps 桩替换 FFI 调用)
+mock = []
+default = []

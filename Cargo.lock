@@ -142,6 +142,9 @@ version = "0.1.0"
 [[package]]
 name = "can-usbvci"
 version = "0.1.0"
+dependencies = [
+ "can-types",
+]
 
 [[package]]
 name = "canopen-host"
