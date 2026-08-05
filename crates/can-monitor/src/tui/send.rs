@@ -321,6 +321,10 @@ impl SendPanel {
     }
 
     /// 处理字段填写阶段按键。
+    ///
+    /// NMT 服务有一个虚拟的"命令"槽位 (索引 0, 由 [`Self::nmt_cmd`] 承载,
+    /// 类型行显示), 其后才是真正的文本字段。因此 NMT 的 Tab 循环范围是
+    /// `fields.len() + 1` (命令槽 + 字段), 其他服务直接循环文本字段。
     fn handle_fill_fields(&mut self, key: KeyEvent) -> bool {
         match key.code {
             KeyCode::Esc => {
@@ -328,7 +332,13 @@ impl SendPanel {
                 true
             }
             KeyCode::Tab => {
-                self.active_field = (self.active_field + 1) % self.fields.len();
+                // NMT: 槽位数 = 命令槽 + 字段数; 其他: 字段数。
+                let slots = if self.service_type == ServiceType::Nmt {
+                    self.fields.len() + 1
+                } else {
+                    self.fields.len()
+                };
+                self.active_field = (self.active_field + 1) % slots;
                 self.error = None;
                 true
             }
@@ -348,19 +358,31 @@ impl SendPanel {
                 }
             }
             KeyCode::Backspace => {
-                if let Some(f) = self.fields.get_mut(self.active_field) {
+                // NMT 的命令槽 (0) 无文本可删, 只处理字段槽位。
+                if self.service_type == ServiceType::Nmt {
+                    if self.active_field >= 1 {
+                        if let Some(f) = self.fields.get_mut(self.active_field - 1) {
+                            f.pop();
+                        }
+                    }
+                } else if let Some(f) = self.fields.get_mut(self.active_field) {
                     f.pop();
                 }
                 self.error = None;
                 true
             }
             KeyCode::Char(c) if is_hex_char(c) => {
-                if self.service_type == ServiceType::Nmt && self.active_field == 0 {
-                    if let Some(d) = c.to_digit(10) {
-                        let d = d as usize;
-                        if d >= 1 && d <= NMT_OPTIONS.len() {
-                            self.nmt_cmd.index = d - 1;
+                if self.service_type == ServiceType::Nmt {
+                    if self.active_field == 0 {
+                        // 命令槽: 数字 1-5 选择 NMT 命令。
+                        if let Some(d) = c.to_digit(10) {
+                            let d = d as usize;
+                            if d >= 1 && d <= NMT_OPTIONS.len() {
+                                self.nmt_cmd.index = d - 1;
+                            }
                         }
+                    } else if let Some(f) = self.fields.get_mut(self.active_field - 1) {
+                        f.push(c);
                     }
                 } else if let Some(f) = self.fields.get_mut(self.active_field) {
                     f.push(c);
@@ -474,7 +496,13 @@ impl SendPanel {
 
         // 字段行。
         for (i, field) in self.fields.iter().enumerate() {
-            let is_active = i == self.active_field;
+            // NMT 的槽位 0 是命令槽 (类型行显示), 字段从槽位 1 开始。
+            let slot = if self.service_type == ServiceType::Nmt {
+                i + 1
+            } else {
+                i
+            };
+            let is_active = slot == self.active_field;
             let style = if is_active {
                 Style::default()
                     .fg(Color::Green)
@@ -834,6 +862,42 @@ mod tests {
         let key3 = KeyEvent::new(KeyCode::Char('3'), crossterm::event::KeyModifiers::NONE);
         panel.handle_key(key3);
         assert_eq!(panel.service_type, ServiceType::SdoWrite);
+    }
+
+    /// 键盘全流程: NMT 命令槽 (槽位 0) 与节点ID 字段 (槽位 1) 经 Tab 切换,
+    /// 输入后可构造出 NMT 帧。回归测试: 曾因槽位溢出无法键盘输入节点ID。
+    #[test]
+    fn nmt_keyboard_flow_sends_start_node1() {
+        let mut panel = SendPanel::new();
+        panel.open();
+        let key = |c: KeyCode| KeyEvent::new(c, crossterm::event::KeyModifiers::NONE);
+
+        // 打开面板 → 确认 NMT → 槽位 0 (命令), 数字 1 = START。
+        panel.handle_key(key(KeyCode::Enter));
+        assert_eq!(panel.state, PanelState::FillFields);
+        assert_eq!(panel.active_field, 0);
+        panel.handle_key(key(KeyCode::Char('1')));
+        assert_eq!(panel.nmt_cmd.value(), 0);
+
+        // Tab → 槽位 1 (节点ID 字段), 输入 "1"。
+        panel.handle_key(key(KeyCode::Tab));
+        assert_eq!(panel.active_field, 1);
+        panel.handle_key(key(KeyCode::Char('1')));
+        assert_eq!(panel.fields[0].as_str(), "1");
+
+        // Enter → 验证通过, 可发送; 帧为 NMT START node 1。
+        panel.handle_key(key(KeyCode::Enter));
+        assert!(panel.ready_to_send());
+        let mut sent = None;
+        panel
+            .try_send(|f| {
+                sent = Some(f);
+                Ok(())
+            })
+            .expect("NMT 帧应可发送");
+        let frame = sent.expect("应捕获发送帧");
+        assert_eq!(frame.id().raw_id(), 0x000);
+        assert_eq!(frame.data(), &[0x01, 0x01]);
     }
 
     // ---- 帧构造测试 ----

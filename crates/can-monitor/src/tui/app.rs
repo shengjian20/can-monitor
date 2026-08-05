@@ -393,10 +393,10 @@ impl App {
     fn render(&mut self, frame: &mut Frame) {
         let area = frame.area();
 
-        // 三区垂直布局: 消息区 (Min) + 状态栏 (Length 3) + 帮助行 (Length 1)。
+        // 三区垂直布局: 消息区 (Min) + 状态栏 (Length 5) + 帮助行 (Length 1)。
         let layout = Layout::vertical([
             Constraint::Min(10),   // 消息区: 至少 10 行
-            Constraint::Length(3), // 状态栏: 3 行
+            Constraint::Length(5), // 状态栏: 2 边框 + 状态/计数/错误 3 行
             Constraint::Length(1), // 帮助行: 1 行
         ]);
         let chunks = layout.split(area);

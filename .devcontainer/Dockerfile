@@ -19,6 +19,7 @@ RUN apt-get update && export DEBIAN_FRONTEND=noninteractive \
         can-utils \
         pkg-config \
         libusb-dev \
+        patchelf \
         iproute2 \
         ca-certificates \
         curl \

@@ -15,6 +15,19 @@ OUT_BIN="target/aarch64-unknown-linux-gnu/release/can-monitor"
 # 确保交叉编译目标已安装 (幂等)
 rustup target add aarch64-unknown-linux-gnu >/dev/null
 
+# 供应商 controlcan .so 无 SONAME 时, zig/lld 会把解析后的绝对路径写进 DT_NEEDED
+# (如 /workspaces/.../libcontrolcan.so), 部署平台无法用 LD_LIBRARY_PATH 覆盖查找。
+# 有 patchelf 时统一补上 SONAME (幂等); 缺失时仅警告 (若 .so 已带 SONAME 则无影响)。
+if command -v patchelf >/dev/null 2>&1; then
+    for so in third_party/controlcan/libcontrolcan.so third_party/controlcan/x86_64/libcontrolcan.so; do
+        if [ -f "$so" ]; then
+            patchelf --set-soname "$(basename "$so")" "$so"
+        fi
+    done
+else
+    echo "警告: 未找到 patchelf, 跳过 .so SONAME 设置 (检查 readelf -d 的 DT_NEEDED 是否为绝对路径)" >&2
+fi
+
 # zigbuild 构建 (透传剩余参数, 例如 -p <crate>)
 cargo zigbuild --release --target "$TARGET" "$@"
 
