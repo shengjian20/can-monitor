@@ -1,0 +1,103 @@
+# Release workflow: 打 tag (v*) 或手动触发 → Tauri 构建 → 上传 GitHub Releases artifacts
+#
+# 重要说明 (容错): 本 workflow 依赖 T17 (src-tauri/) 与 T18 (web/) 合入后的仓库结构。
+# 当前这两个目录尚不存在 — tag 触发 (v*) 时它们必然已合入, 构建正常; 在此之前只有
+# workflow_dispatch 能手动跑到, 此时 hashFiles 守卫会跳过对应步骤, 不打假成功也不报错混淆。
+
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  publish:
+    name: publish (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    # tauri-action 需要创建/更新 GitHub Release 并上传产物 → contents: write
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        # macOS 不在发布矩阵: Tauri v2 的 macOS 产物 (dmg/app) 走签名/公证流程需要
+        # Apple 开发者证书 (APPLE_ID / APPLE_CERTIFICATE 等 secrets), 本项目未配置。
+        # 如需发布 dmg: os 列表加一行 `- os: macos-latest` 并按 Tauri 官方文档配置签名 secrets。
+    env:
+      # --- Tauri v2 关键环境变量 ---
+      # NO_STRIP: AppImage 构建必须置 true — 若 strip 二进制, 产物会带 .relr.dyn section,
+      #           AppImage 打包工具解析失败 (Tauri 官方已知问题)
+      NO_STRIP: "true"
+      # WEBKIT_DISABLE_DMABUF_RENDERER: 规避 WebKitGTK 在无 GPU / 容器环境
+      #           (GitHub runner 常见) 下的 EGL/DMABUF 渲染崩溃, 强制软件渲染
+      WEBKIT_DISABLE_DMABUF_RENDERER: "1"
+
+    steps:
+      - uses: actions/checkout@v7
+
+      # Node 22 (LTS): Tauri 2.11.x 支持 Node 20/22 LTS, 与 ci.yml 保持同款 action 版本
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      # 缓存 cargo registry + target; 与 ci.yml 同款 (workspaces 同时列根 workspace 与 src-tauri)
+      # rust-cache 对缺失 workspace 目录只打错误不 fail (T8 已核实), 此处 src-tauri 尚可缺失
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            . -> target
+            ./src-tauri -> target
+
+      # Tauri v2 的 Linux 系统依赖 (注意是 libwebkit2gtk-4.1, 与 Tauri v1 的 4.0 不同)
+      # patchelf + xdg-utils 为 Tauri 官方推荐的 AppImage bundling 依赖
+      - name: Install Linux system deps (Tauri v2)
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            patchelf \
+            xdg-utils
+
+      # 前端构建: web/ 由 T18 创建 (Vite + TS, npm ci 需要 package-lock.json)
+      # hashFiles 容错: web/ 尚不存在时跳过本步
+      - name: Build frontend (web/)
+        if: ${{ hashFiles('web/package-lock.json') != '' }}
+        run: |
+          npm --prefix web ci
+          npm --prefix web run build
+
+      # 构建并发布: tauri-action 在 tagName 指定的 release (不存在则自动创建) 上自动上传
+      # bundle 产物 (Linux: AppImage + deb; Windows: MSI + NSIS), 无需额外 upload 步骤。
+      # 若改为显式 glob 上传 (不使用 tauri-action 自动上传), 可追加
+      #   softprops/action-gh-release@v2
+      #   with: files: 'src-tauri/target/release/bundle/**/*'   # tauri 实际产物目录
+      # hashFiles 容错: src-tauri 缺失时跳过 (预期行为, tag 触发时已存在)
+      - name: Build & publish (tauri-action)
+        if: ${{ hashFiles('src-tauri/tauri.conf.json') != '' }}
+        uses: tauri-apps/tauri-action@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          # 非根目录布局: tauri 工程在 src-tauri/ (T17 创建)
+          projectPath: './src-tauri'
+          # tag 触发时 github.ref_name = vX.Y.Z, 直接作为 release tag/name
+          # (workflow_dispatch 时 ref_name 是当前分支名, 仅用于手动试跑)
+          tagName: ${{ github.ref_name }}
+          releaseName: ${{ github.ref_name }}
+          releaseBody: |
+            Automated release build for can-monitor.
+            Download the asset matching your platform and install.
+          releaseDraft: true
+          prerelease: false
+          args: --verbose
