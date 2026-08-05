@@ -19,3 +19,4 @@ can-types = { path = "../crates/can-types" }
 can-monitor-core = { path = "../crates/can-monitor-core" }
 can-socketcan = { path = "../crates/can-socketcan" }
 can-usbvci = { path = "../crates/can-usbvci" }
+can-devices = { path = "../crates/can-devices" }

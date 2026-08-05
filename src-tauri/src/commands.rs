@@ -4,8 +4,7 @@
 //!
 //! ## 设备发现
 //!
-//! 当前聚合 SocketCAN sysfs 扫描; USBVCI 设备枚举待 `can-usbvci` 实现
-//! `DeviceDiscoverer` 后接入 (T12)。
+//! 经 `can_devices::DeviceManager::list_devices()` 聚合 SocketCAN + USBVCI。
 //!
 //! ## 帧 JSON 契约
 //!
@@ -27,10 +26,9 @@ use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use can_monitor_core::bus::MonitorBus;
-use can_monitor_core::classifier::{FrameClassifier, ParsedMessage};
+use can_monitor_core::classifier::{FrameClassifier, ParsedMessage, StreamItem};
 use can_types::{
-    BackendConfig, BackendKind, CanBackend, CanDeviceInfo, CanFrame, CanId, DeviceDiscoverer,
-    Direction,
+    BackendConfig, BackendKind, CanBackend, CanDeviceInfo, CanFrame, CanId, Direction,
 };
 use serde::{Deserialize, Serialize};
 use tauri::ipc::Channel;
@@ -113,9 +111,11 @@ pub struct SendFrameRequest {
 
 // ─── 辅助函数 ───────────────────────────────────────────────────
 
-/// 将 CanMessage 转为帧 JSON (供 Channel 推送)。
-fn message_to_json(msg: &can_types::CanMessage, classifier: &mut FrameClassifier) -> FrameJson {
-    let frame = &msg.frame;
+/// 将 StreamItem 转为帧 JSON (供 Channel 推送)。
+///
+/// 直接使用 reader 已分类的 ParsedMessage, 绝不重复 classify。
+fn stream_item_to_json(item: &StreamItem) -> FrameJson {
+    let frame = &item.msg.frame;
     let ts_ms = frame
         .timestamp()
         .unwrap_or(SystemTime::now())
@@ -123,8 +123,7 @@ fn message_to_json(msg: &can_types::CanMessage, classifier: &mut FrameClassifier
         .unwrap_or_default()
         .as_millis();
 
-    let parsed = classifier.classify(frame);
-    let (protocol, summary) = match &parsed {
+    let (protocol, summary) = match &item.parsed {
         ParsedMessage::Canopen { msg, .. } => ("canopen".to_string(), format!("{:?}", msg)),
         ParsedMessage::J1939 { msg, .. } => ("j1939".to_string(), format!("{:?}", msg)),
         ParsedMessage::Raw(_) => ("raw".to_string(), String::new()),
@@ -141,7 +140,7 @@ fn message_to_json(msg: &can_types::CanMessage, classifier: &mut FrameClassifier
         ts: ts_ms.to_string(),
         id: format!("0x{:X}", frame.id().raw_id()),
         ext: frame.id().is_extended(),
-        dir: match msg.direction {
+        dir: match item.msg.direction {
             Direction::Rx => "rx".to_string(),
             Direction::Tx => "tx".to_string(),
         },
@@ -153,12 +152,9 @@ fn message_to_json(msg: &can_types::CanMessage, classifier: &mut FrameClassifier
 
 /// 聚合所有已实现的 DeviceDiscoverer, 返回设备列表。
 ///
-/// 当前仅包含 SocketCAN; USBVCI 待 can-usbvci 实现 DeviceDiscoverer 后接入。
-fn aggregate_devices() -> Vec<CanDeviceInfo> {
-    let mut devices = can_socketcan::list_devices();
-    // TODO(T12): 当 can-usbvci 实现 DeviceDiscoverer 后, 追加 USBVCI 设备。
-    // devices.extend(can_usbvci::UsbVciDiscoverer::list_devices());
-    devices
+/// 经 `can_devices::DeviceManager` 聚合 SocketCAN + USBVCI。
+fn aggregate_devices() -> Vec<can_types::CanDeviceInfo> {
+    can_devices::DeviceManager::list_devices()
 }
 
 /// 解析设备 ID 字符串, 返回 (backend_kind, 参数)。
@@ -314,18 +310,16 @@ pub fn subscribe_frames(
     let stop_flag = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let stop_clone = Arc::clone(&stop_flag);
 
-    // 推送线程: 从 bus 订阅端读帧 → 转 JSON → Channel.send。
-    // 每个推送线程独立创建 FrameClassifier (不实现 Clone, 无 J1939 TP 状态)。
+    // 推送线程: 从 bus 订阅端读 StreamItem → 转 JSON → Channel.send。
+    // StreamItem 已由 reader 分类, 不再重复 classify。
     let handle = thread::Builder::new()
         .name(format!("can-channel-{channel_id}"))
         .spawn(move || {
-            let mut classifier = FrameClassifier::default();
             while !stop_clone.load(Ordering::Relaxed) {
                 match rx.recv_timeout(Duration::from_millis(100)) {
-                    Ok(msg) => {
-                        let json = message_to_json(&msg, &mut classifier);
+                    Ok(item) => {
+                        let json = stream_item_to_json(&item);
                         if on_frame.send(json).is_err() {
-                            // 前端断开 Channel, 退出推送线程。
                             break;
                         }
                     }
