@@ -96,8 +96,13 @@ fn link_shared(lib_dir: &Path) {
     }
     println!("cargo:rustc-link-search=native={}", lib_dir.display());
     println!("cargo:rustc-link-lib=dylib=controlcan");
-    // 供应商 .so 位于仓库内非标准路径, 把目录写入 rpath, 使产物运行时不依赖 ldconfig。
-    // 仅 .so 模式需要 (static 模式无运行时 .so 加载)。
+    // 供应商 .so 位于仓库内非标准路径, 把目录写入 rpath, 使本 crate 自身目标
+    // (如未来调用 VCI 函数的测试二进制) 运行时不依赖 ldconfig。仅 .so 模式需要。
+    //
+    // 重要: cargo 的 build script 链接参数只作用于发出指令的 crate 自身的目标
+    // (cargo 源码 add_native_deps: 仅 LinkArgTarget::Cdylib 允许跨包传递, 见
+    // rust-lang/cargo#9562)。因此这里的 rpath 不会传播到依赖方 (如 can-monitor)
+    // 的最终二进制 —— 那由 can-monitor/build.rs 另行注入。
     println!(
         "cargo:rustc-link-arg=-Wl,-rpath,{}",
         lib_dir.display()

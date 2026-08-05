@@ -22,3 +22,6 @@ pub mod logger;
 
 /// 帧过滤引擎 (过滤条件 + ID 高亮规则)。
 pub mod filter;
+
+/// 基于 ratatui 的终端用户界面模块。
+pub mod tui;
