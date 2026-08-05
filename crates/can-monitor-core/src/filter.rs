@@ -25,7 +25,7 @@
 
 use can_types::{CanFrame, CanMessage, Direction};
 
-use crate::classifier::{ParsedMessage, Protocol};
+use crate::classifier::{ParsedMessage, Protocol, StreamItem};
 
 /// 高亮样式 (UI 无关的简化表示)。
 ///
@@ -222,6 +222,24 @@ impl FrameFilter {
         }
         let raw_id = parsed_frame(parsed).id().raw_id();
         self.id_range_matches(raw_id) && self.protocol_matches(parsed.protocol())
+    }
+
+    /// 判断一条流元素是否通过过滤 (完整三条件, 推荐入口)。
+    ///
+    /// 流元素 [`StreamItem`] 同时携带统一消息 (含收发方向) 与已分类结果
+    /// (含协议类别), 因此本方法一次检查 ID 范围 / 协议 / 方向三个条件 (AND),
+    /// 是消费端 (TUI / Web / Tauri) 过滤广播流的推荐入口 —— 无需再次分类。
+    ///
+    /// @param item 待判断的流元素。
+    /// @return `true` 表示通过 (或过滤未启用)。
+    pub fn matches_item(&self, item: &StreamItem) -> bool {
+        if !self.enabled {
+            return true;
+        }
+        let msg = &item.msg;
+        self.id_range_matches(msg.frame.id().raw_id())
+            && self.direction_matches(msg.direction)
+            && self.protocol_matches(item.parsed.protocol())
     }
 
     /// 判断一帧原始帧是否通过过滤。
@@ -469,6 +487,14 @@ mod tests {
         CanMessage::new(frame(id, &[1]), BackendKind::None, direction)
     }
 
+    /// 构造流元素 (统一消息 + 分类结果)。
+    fn item(id: u16, direction: Direction, parsed: ParsedMessage) -> StreamItem {
+        StreamItem {
+            msg: msg(id, direction),
+            parsed,
+        }
+    }
+
     /// 启用并只设置 ID 范围 [0x100, 0x1FF] 的过滤器。
     fn filter_id_range() -> FrameFilter {
         let mut f = FrameFilter::new();
@@ -534,6 +560,28 @@ mod tests {
         assert!(!f.matches_parsed(&parsed(Protocol::Raw, frame(0x181, &[1]))));
         // 协议命中但 ID 越界。
         assert!(!f.matches_parsed(&parsed_canopen(0x080)));
+    }
+
+    /// matches_item: 流元素的 ID 范围 + 协议 + 方向三条件 (AND)。
+    #[test]
+    fn matches_item_combines_all_three() {
+        let mut f = FrameFilter::new();
+        f.set_enabled(true)
+            .set_id_range(0x180, 0x1FF)
+            .set_protocol(Protocol::Canopen)
+            .set_direction(Direction::Rx);
+        // 三条件全中。
+        assert!(f.matches_item(&item(0x181, Direction::Rx, parsed_canopen(0x181))));
+        // 方向不匹配。
+        assert!(!f.matches_item(&item(0x181, Direction::Tx, parsed_canopen(0x181))));
+        // 协议不匹配。
+        assert!(!f.matches_item(&item(
+            0x181,
+            Direction::Rx,
+            parsed(Protocol::Raw, frame(0x181, &[1]))
+        )));
+        // ID 越界。
+        assert!(!f.matches_item(&item(0x080, Direction::Rx, parsed_canopen(0x080))));
     }
 
     /// enabled = false 时全部通过, 即使设置了过滤条件。

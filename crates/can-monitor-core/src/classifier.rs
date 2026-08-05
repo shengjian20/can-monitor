@@ -13,7 +13,7 @@
 
 use std::time::{Duration, Instant};
 
-use can_types::CanFrame;
+use can_types::{CanFrame, CanMessage};
 use canopen_stack::{CanopenMessage, CanopenService};
 use j1939_stack::{J1939Message, J1939Service};
 
@@ -72,6 +72,23 @@ impl ParsedMessage {
             ParsedMessage::J1939 { .. } => Protocol::J1939,
         }
     }
+}
+
+/// 流中的一条完整报文元素。
+///
+/// 广播流 (由 [`bus::MonitorBus`](crate::bus::MonitorBus) 的 reader 线程发布)
+/// 的元素类型: 原始统一消息与其**一次**分类结果打包在一起下发。所有消费者
+/// (TUI / Web / Tauri) 直接消费本结构, 用
+/// [`StreamItem::parsed`] 做协议过滤 / 高亮 / 显示, 用
+/// [`StreamItem::msg`] 做方向判断 / 日志 / 序列化 —— **不需要 (也不允许)
+/// 再次调用 [`FrameClassifier::classify`]**, 从而保证每帧在整个数据通路中
+/// 恰好被分类一次。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StreamItem {
+    /// 原始统一消息 (方向恒为 [`Direction::Rx`](can_types::Direction::Rx))。
+    pub msg: CanMessage,
+    /// 本条消息的分类结果 (供过滤 / 高亮 / 协议显示)。
+    pub parsed: ParsedMessage,
 }
 
 /// 帧分类器。

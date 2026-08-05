@@ -21,15 +21,14 @@
 
 use std::collections::VecDeque;
 use std::io;
-use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use can_types::CanMessage;
 use can_monitor_core::bus::MonitorBus;
-use can_monitor_core::classifier::FrameClassifier;
+use can_monitor_core::classifier::StreamItem;
+use can_monitor_core::crossbeam_channel::Receiver;
 use can_monitor_core::filter::FrameFilter;
 use can_monitor_core::logger::CandumpLogger;
-use can_monitor_core::crossbeam_channel::Receiver;
+use can_types::CanMessage;
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind};
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Style};
@@ -43,14 +42,17 @@ use crate::tui::stream::MessageStream;
 /// 消息窗口最大帧数 (防内存泄漏)。
 const MAX_MESSAGES: usize = 1000;
 
-/// 显示用消息, 携带原始消息与可选的分类结果。
+/// 显示用消息, 携带原始消息与分类结果。
+///
+/// 分类发生在 reader 线程 (恰好一次), 消费端直接使用流元素中已分类的
+/// [`StreamItem::parsed`] 填充, 不再 (也不允许) 二次分类。
 #[derive(Debug, Clone)]
 pub struct DisplayMessage {
     /// 原始统一消息。
     pub raw: CanMessage,
     /// 分类结果 (用于高亮与协议过滤)。
     ///
-    /// 生产路径下 `classify` 恒返回 `Some`, 此处保持 `Option` 仅为
+    /// 生产路径下 reader 分类恒产生 `Some`, 此处保持 `Option` 仅为
     /// 测试构造未分类消息方便 (如 [`crate::tui::stream`] 的测试桩)。
     pub parsed: Option<can_monitor_core::classifier::ParsedMessage>,
 }
@@ -59,13 +61,14 @@ pub struct DisplayMessage {
 ///
 /// 持有消息总线、接收 channel、过滤器、消息窗口与 UI 状态,
 /// 通过 [`App::run`] 驱动事件循环。监控开关**默认关闭**。
+///
+/// **不持有帧分类器**: 分类已在 reader 线程完成一次, 本层只消费
+/// [`StreamItem`] 中携带的 [`StreamItem::parsed`]。
 pub struct App {
     /// 消息总线 (监控开关控制)。
     bus: MonitorBus,
-    /// 帧分类器 (共享, 用于将原始帧分类为 [`ParsedMessage`])。
-    classifier: Arc<Mutex<FrameClassifier>>,
-    /// 消息接收端。
-    rx: Receiver<CanMessage>,
+    /// 消息接收端 (元素为 reader 已分类一次的 [`StreamItem`])。
+    rx: Receiver<StreamItem>,
     /// 错误接收端。
     err_rx: Receiver<String>,
     /// 帧过滤器。
@@ -97,24 +100,22 @@ pub struct App {
 impl App {
     /// 创建 TUI 应用。
     ///
-    /// 监控开关初始为**关闭**。
+    /// 监控开关初始为**关闭**。本层不持有帧分类器: 流元素已在 reader 线程
+    /// 分类一次, 此处只接收 [`StreamItem`]。
     ///
     /// @param bus        消息总线。
-    /// @param classifier 帧分类器 (共享)。
-    /// @param rx         消息接收端。
+    /// @param rx         消息接收端 (元素为已分类的 [`StreamItem`])。
     /// @param err_rx     错误接收端。
     /// @param filter     帧过滤器。
     /// @return 应用实例。
     pub fn new(
         bus: MonitorBus,
-        classifier: Arc<Mutex<FrameClassifier>>,
-        rx: Receiver<CanMessage>,
+        rx: Receiver<StreamItem>,
         err_rx: Receiver<String>,
         filter: FrameFilter,
     ) -> Self {
         Self {
             bus,
-            classifier,
             rx,
             err_rx,
             filter,
@@ -271,15 +272,17 @@ impl App {
         }
     }
 
-    /// 从消息 channel 拉取所有待处理消息, 过滤后推入窗口。
+    /// 从消息 channel 拉取所有待处理流元素, 过滤后推入窗口。
     ///
-    /// 若日志记录器已挂载且开启, 同步记录每帧到日志文件。
+    /// 流元素已在 reader 线程分类一次 (`item.parsed`), 本层直接用其过滤 /
+    /// 高亮, **不再调用 classify**。若日志记录器已挂载且开启, 同步记录每帧
+    /// 到日志文件。
     fn drain_messages(&mut self) {
-        while let Ok(msg) = self.rx.try_recv() {
+        while let Ok(item) = self.rx.try_recv() {
             // 日志记录 (在过滤前, 记录原始帧)。
             if let Some(ref mut logger) = self.logger {
                 if self.logging_enabled {
-                    if let Err(e) = logger.log_frame(&msg.frame, &self.iface_name) {
+                    if let Err(e) = logger.log_frame(&item.msg.frame, &self.iface_name) {
                         // 写盘失败: 累计错误并上报状态栏, 不静默丢弃。
                         self.logger_errors += 1;
                         self.last_error = Some(format!("日志写入失败: {e}"));
@@ -287,24 +290,18 @@ impl App {
                 }
             }
 
-            if !self.filter.matches(&msg) {
+            // 过滤 (基于流元素: ID 范围 / 协议 / 方向三条件)。
+            if !self.filter.matches_item(&item) {
                 continue;
             }
-
-            // 分类消息 (供高亮与协议过滤使用)。
-            let parsed = self
-                .classifier
-                .lock()
-                .unwrap_or_else(|poison| poison.into_inner())
-                .classify(&msg.frame);
 
             // 推入消息窗口, 超限时移除最旧的。
             if self.messages.len() >= MAX_MESSAGES {
                 self.messages.pop_front();
             }
             self.messages.push_back(DisplayMessage {
-                raw: msg,
-                parsed: Some(parsed),
+                raw: item.msg,
+                parsed: Some(item.parsed),
             });
         }
     }
@@ -408,14 +405,66 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use can_monitor_core::classifier::{FrameClassifier, ParsedMessage};
+    use can_types::{BackendConfig, BackendKind, CanBackend, CanError, CanFrame, CanId};
+    use canopen_stack::NmtState;
+    use std::sync::{Arc, Mutex};
+
+    /// 等待条件成立 (带 5 秒超时, 避免测试挂死)。
+    fn wait_until(cond: impl FnMut() -> bool) {
+        let mut cond = cond;
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while !cond() {
+            assert!(std::time::Instant::now() < deadline, "等待条件超时");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    /// 构造标准帧。
+    fn frame(id: u16, data: &[u8]) -> CanFrame {
+        CanFrame::new(CanId::new_standard(id).unwrap(), data.to_vec()).unwrap()
+    }
+
+    /// 测试桩后端: 首次 `read_frame` 返回预置帧, 之后恒超时。
+    struct StubBackend {
+        frame: Option<CanFrame>,
+    }
+
+    impl StubBackend {
+        fn new(frame: CanFrame) -> Self {
+            Self { frame: Some(frame) }
+        }
+    }
+
+    impl CanBackend for StubBackend {
+        fn open(_config: &BackendConfig) -> can_types::Result<Self> {
+            unreachable!("测试桩不经 open 构造")
+        }
+
+        fn read_frame(&mut self, timeout: Duration) -> can_types::Result<CanFrame> {
+            if let Some(f) = self.frame.take() {
+                Ok(f)
+            } else {
+                std::thread::sleep(timeout);
+                Err(CanError::Timeout)
+            }
+        }
+
+        fn write_frame(&mut self, _frame: &CanFrame) -> can_types::Result<()> {
+            Ok(())
+        }
+
+        fn close(&mut self) -> can_types::Result<()> {
+            Ok(())
+        }
+    }
 
     /// App::new 默认 monitoring = false。
     #[test]
     fn app_default_monitoring_off() {
         let (bus, rx, err_rx) = MonitorBus::new();
-        let classifier = Arc::new(Mutex::new(FrameClassifier::default()));
         let filter = FrameFilter::new();
-        let app = App::new(bus, classifier, rx, err_rx, filter);
+        let app = App::new(bus, rx, err_rx, filter);
         assert!(!app.is_monitoring());
     }
 
@@ -423,9 +472,8 @@ mod tests {
     #[test]
     fn app_default_no_logger() {
         let (bus, rx, err_rx) = MonitorBus::new();
-        let classifier = Arc::new(Mutex::new(FrameClassifier::default()));
         let filter = FrameFilter::new();
-        let app = App::new(bus, classifier, rx, err_rx, filter);
+        let app = App::new(bus, rx, err_rx, filter);
         assert!(app.logger.is_none());
         assert!(!app.logging_enabled);
     }
@@ -434,9 +482,8 @@ mod tests {
     #[test]
     fn app_default_backend_info() {
         let (bus, rx, err_rx) = MonitorBus::new();
-        let classifier = Arc::new(Mutex::new(FrameClassifier::default()));
         let filter = FrameFilter::new();
-        let app = App::new(bus, classifier, rx, err_rx, filter);
+        let app = App::new(bus, rx, err_rx, filter);
         assert_eq!(app.backend_name, "None");
         assert_eq!(app.iface_name, "can0");
     }
@@ -445,9 +492,8 @@ mod tests {
     #[test]
     fn app_set_backend_and_iface() {
         let (bus, rx, err_rx) = MonitorBus::new();
-        let classifier = Arc::new(Mutex::new(FrameClassifier::default()));
         let filter = FrameFilter::new();
-        let mut app = App::new(bus, classifier, rx, err_rx, filter);
+        let mut app = App::new(bus, rx, err_rx, filter);
         app.set_backend_name("SocketCAN".to_string());
         app.set_iface_name("vcan0".to_string());
         assert_eq!(app.backend_name, "SocketCAN");
@@ -458,9 +504,8 @@ mod tests {
     #[test]
     fn key_f_toggles_filter() {
         let (bus, rx, err_rx) = MonitorBus::new();
-        let classifier = Arc::new(Mutex::new(FrameClassifier::default()));
         let filter = FrameFilter::new();
-        let mut app = App::new(bus, classifier, rx, err_rx, filter);
+        let mut app = App::new(bus, rx, err_rx, filter);
 
         // 初始: 过滤关闭。
         assert!(!app.filter.is_enabled());
@@ -482,9 +527,8 @@ mod tests {
     #[test]
     fn key_l_no_logger_noop() {
         let (bus, rx, err_rx) = MonitorBus::new();
-        let classifier = Arc::new(Mutex::new(FrameClassifier::default()));
         let filter = FrameFilter::new();
-        let mut app = App::new(bus, classifier, rx, err_rx, filter);
+        let mut app = App::new(bus, rx, err_rx, filter);
 
         let key_l = KeyEvent::new(KeyCode::Char('l'), crossterm::event::KeyModifiers::NONE);
         app.handle_key(key_l);
@@ -496,9 +540,8 @@ mod tests {
     #[test]
     fn key_l_with_logger_toggles() {
         let (bus, rx, err_rx) = MonitorBus::new();
-        let classifier = Arc::new(Mutex::new(FrameClassifier::default()));
         let filter = FrameFilter::new();
-        let mut app = App::new(bus, classifier, rx, err_rx, filter);
+        let mut app = App::new(bus, rx, err_rx, filter);
 
         // 挂载 logger (临时文件)。
         let path = std::env::temp_dir().join(format!("test-{}-key_l.log", std::process::id()));
@@ -529,12 +572,48 @@ mod tests {
     #[test]
     fn key_x_no_panic() {
         let (bus, rx, err_rx) = MonitorBus::new();
-        let classifier = Arc::new(Mutex::new(FrameClassifier::default()));
         let filter = FrameFilter::new();
-        let mut app = App::new(bus, classifier, rx, err_rx, filter);
+        let mut app = App::new(bus, rx, err_rx, filter);
 
         let key_x = KeyEvent::new(KeyCode::Char('x'), crossterm::event::KeyModifiers::NONE);
         app.handle_key(key_x);
         // 不 panic 即可。
+    }
+
+    /// drain_messages 直接消费已分类的 StreamItem, 不再二次分类。
+    ///
+    /// 经总线 reader 喂入单帧心跳, App 排空后显示消息直接携带 reader 的分类
+    /// 结果 (item.parsed); App 自身不持有分类器, 无法 (也不允许) 再次分类。
+    #[test]
+    fn drain_messages_uses_item_parsed() {
+        let (bus, rx, err_rx) = MonitorBus::new();
+        let classifier = Arc::new(Mutex::new(FrameClassifier::default()));
+        // 后端桩: 首次读返回心跳帧 (node5 → Operational), 之后恒超时。
+        bus.start_reader(
+            StubBackend::new(frame(0x705, &[0x05])),
+            Arc::clone(&classifier),
+            BackendKind::SocketCan,
+        )
+        .unwrap();
+
+        let filter = FrameFilter::new();
+        let mut app = App::new(bus, rx, err_rx, filter);
+        app.set_iface_name("vcan0".to_string());
+
+        app.bus.set_monitoring(true);
+        wait_until(|| app.bus.total_frames() >= 1);
+        app.drain_messages();
+
+        // 恰好一条显示消息, parsed 直接来自 reader 的一次分类。
+        assert_eq!(app.messages.len(), 1);
+        let dm = &app.messages[0];
+        assert_eq!(dm.raw.frame.id().raw_id(), 0x705);
+        assert!(matches!(dm.parsed, Some(ParsedMessage::Canopen { .. })));
+
+        // 分类只发生在 reader 线程: 心跳被 observe 后节点状态推进一次。
+        let classifier = classifier.lock().unwrap();
+        assert_eq!(classifier.node_state(5), Some(NmtState::Operational));
+
+        app.bus.shutdown();
     }
 }

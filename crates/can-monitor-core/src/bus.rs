@@ -20,7 +20,7 @@ use can_types::{BackendKind, CanBackend, CanError, CanFrame, CanMessage, Directi
 use crossbeam_channel::{Receiver, Sender};
 
 use crate::broadcaster::{ConsumerId, StreamBroadcaster};
-use crate::classifier::{FrameClassifier, ParsedMessage};
+use crate::classifier::{FrameClassifier, ParsedMessage, StreamItem};
 
 /// 错误 channel 容量。
 const ERROR_CHANNEL_CAPACITY: usize = 64;
@@ -34,14 +34,15 @@ const POLL_INTERVAL: Duration = Duration::from_millis(20);
 /// 消息总线。
 ///
 /// 由 [`MonitorBus::new`] 创建, 返回总线本体与供消费的两条 channel 接收端:
-/// - `Receiver<CanMessage>`: 默认消费者的消息流 (内部经 [`StreamBroadcaster`]
-///   广播, 可再经 [`MonitorBus::subscribe`] 订阅更多消费者);
+/// - `Receiver<StreamItem>`: 默认消费者的消息流 (元素为原始消息 + 一次分类
+///   结果的打包 [`StreamItem`], 内部经 [`StreamBroadcaster`] 广播, 可再经
+///   [`MonitorBus::subscribe`] 订阅更多消费者);
 /// - `Receiver<String>`: reader 线程遇到的后端错误描述。
 ///
 /// 总线本身不依赖具体后端: reader 线程通过 [`CanBackend`] trait 泛型接入。
 pub struct MonitorBus {
     /// 消息广播器 (每消费者独立有界队列, reader 发布, 多前端消费)。
-    broadcast: Arc<StreamBroadcaster<CanMessage>>,
+    broadcast: Arc<StreamBroadcaster<StreamItem>>,
     /// 错误投递发送端。
     err_tx: Sender<String>,
     /// 帧发送端 (TUI 下发面板 → reader 线程 → 后端写入)。
@@ -71,7 +72,7 @@ impl MonitorBus {
     /// [`MonitorBus::subscribe`] 追加更多消费者。
     ///
     /// @return 三元组: (总线, 默认消费者消息接收端, 错误接收端)。
-    pub fn new() -> (MonitorBus, Receiver<CanMessage>, Receiver<String>) {
+    pub fn new() -> (MonitorBus, Receiver<StreamItem>, Receiver<String>) {
         let broadcast = Arc::new(StreamBroadcaster::new());
         let (_default_id, rx) = broadcast.subscribe();
         let (err_tx, err_rx) = crossbeam_channel::bounded(ERROR_CHANNEL_CAPACITY);
@@ -98,8 +99,9 @@ impl MonitorBus {
     ///
     /// 线程循环行为:
     /// - **监控关闭**时休眠轮询开关, 不读取后端 (不消费帧);
-    /// - **监控开启**时以 `READ_TIMEOUT` (100ms) 阻塞读一帧, 分类后封装为
-    ///   [`CanMessage`] (方向恒为 [`Direction::Rx`]) **广播**到所有消费者
+    /// - **监控开启**时以 `READ_TIMEOUT` (100ms) 阻塞读一帧, **分类恰好一次**,
+    ///   将分类结果与原始消息打包为 [`StreamItem`] (方向恒为
+    ///   [`Direction::Rx`]) **广播**到所有消费者
     ///   (每消费者独立有界队列, 队列满丢弃新帧, 绝不阻塞 reader),
     ///   并累计对应计数器;
     /// - 读取**超时** ([`CanError::Timeout`]) 视为正常, 直接继续下一轮;
@@ -149,6 +151,8 @@ impl MonitorBus {
                     match backend.read_frame(READ_TIMEOUT) {
                         Ok(frame) => {
                             total.fetch_add(1, Ordering::Relaxed);
+                            // 分类恰好一次 (reader 是流路径上唯一的 classify 调用点,
+                            // 消费者直接消费下面的 StreamItem, 不再重复分类)。
                             let parsed = classifier
                                 .lock()
                                 .unwrap_or_else(|poison| poison.into_inner())
@@ -162,9 +166,12 @@ impl MonitorBus {
                                 }
                                 ParsedMessage::Raw(_) => {}
                             }
-                            let msg = CanMessage::new(frame, source, Direction::Rx);
+                            let item = StreamItem {
+                                msg: CanMessage::new(frame, source, Direction::Rx),
+                                parsed,
+                            };
                             // 广播: try_send 语义, 消费者慢时丢弃新帧, 绝不阻塞。
-                            broadcast.publish(&msg);
+                            broadcast.publish(&item);
                         }
                         Err(CanError::Timeout) => {}
                         Err(e) => {
@@ -233,7 +240,7 @@ impl MonitorBus {
     /// 每个消费者拥有独立有界队列; 消费者慢时丢弃新帧, 不影响 reader 线程。
     ///
     /// @return 二元组: (消费者标识, 该消费者的消息接收端)。
-    pub fn subscribe(&self) -> (ConsumerId, Receiver<CanMessage>) {
+    pub fn subscribe(&self) -> (ConsumerId, Receiver<StreamItem>) {
         self.broadcast.subscribe()
     }
 
@@ -243,7 +250,7 @@ impl MonitorBus {
     ///
     /// @param capacity 消费者队列容量。
     /// @return 二元组: (消费者标识, 该消费者的消息接收端)。
-    pub fn subscribe_with_capacity(&self, capacity: usize) -> (ConsumerId, Receiver<CanMessage>) {
+    pub fn subscribe_with_capacity(&self, capacity: usize) -> (ConsumerId, Receiver<StreamItem>) {
         self.broadcast.subscribe_with_capacity(capacity)
     }
 
@@ -412,12 +419,25 @@ mod tests {
         assert_eq!(bus.error_count(), 0);
         assert_eq!(backend.remaining(), 0);
 
-        // 校验消息内容。
-        let received: Vec<CanMessage> = rx.try_iter().collect();
+        // 校验消息内容: 流元素同时携带原始消息与分类结果。
+        let received: Vec<StreamItem> = rx.try_iter().collect();
         assert_eq!(received.len(), 3);
-        assert_eq!(received[0].frame.id().raw_id(), 0x181);
-        assert_eq!(received[0].source, BackendKind::SocketCan);
-        assert_eq!(received[0].direction, Direction::Rx);
+        assert_eq!(received[0].msg.frame.id().raw_id(), 0x181);
+        assert_eq!(received[0].msg.source, BackendKind::SocketCan);
+        assert_eq!(received[0].msg.direction, Direction::Rx);
+        // 分类结果随流元素下发。
+        assert_eq!(
+            received[0].parsed.protocol(),
+            crate::classifier::Protocol::Canopen
+        );
+        assert_eq!(
+            received[1].parsed.protocol(),
+            crate::classifier::Protocol::J1939
+        );
+        assert_eq!(
+            received[2].parsed.protocol(),
+            crate::classifier::Protocol::Raw
+        );
 
         // 关闭监控: 追加帧不被消费, 计数冻结。
         bus.set_monitoring(false);
@@ -426,6 +446,44 @@ mod tests {
         thread::sleep(Duration::from_millis(200));
         assert_eq!(bus.total_frames(), 3);
         assert_eq!(backend.remaining(), 2);
+
+        bus.shutdown();
+    }
+
+    /// 单帧 → 恰好一次 classify: 喂 1 帧心跳, 节点健康状态只推进一次。
+    ///
+    /// reader 线程是整条流 (读帧 → 分类 → 发布 → 消费) 上唯一的 classify
+    /// 调用点 (消费者已不持有分类器), 因此一帧必然恰好被分类一次。此处用心跳的
+    /// observable 副作用 (节点健康状态) 验证分类确实发生且只推进到对应状态。
+    #[test]
+    fn single_frame_classifies_exactly_once() {
+        let (bus, rx, _err_rx) = MonitorBus::new();
+        // 单帧: CANopen 心跳 node5 → Operational。
+        let backend = MockBackend::new(vec![Ok(frame(0x705, &[0x05]))]);
+        let classifier = Arc::new(Mutex::new(FrameClassifier::default()));
+        bus.start_reader(backend, Arc::clone(&classifier), BackendKind::SocketCan)
+            .unwrap();
+
+        bus.set_monitoring(true);
+        wait_until(|| !rx.is_empty());
+
+        // 恰好一帧进入流, 分类结果随元素下发。
+        let items: Vec<StreamItem> = rx.try_iter().collect();
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].msg.frame.id().raw_id(), 0x705);
+        assert_eq!(
+            items[0].parsed.protocol(),
+            crate::classifier::Protocol::Canopen
+        );
+
+        // 分类只发生了一次: 心跳被 observe 后节点状态推进到 Operational。
+        let classifier = classifier.lock().unwrap();
+        assert_eq!(
+            classifier.node_state(5),
+            Some(canopen_stack::NmtState::Operational)
+        );
+        // 未喂心跳的节点不产生任何状态。
+        assert_eq!(classifier.node_state(6), None);
 
         bus.shutdown();
     }

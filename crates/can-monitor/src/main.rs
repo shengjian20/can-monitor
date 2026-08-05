@@ -62,7 +62,7 @@ fn run(cli: CliArgs) -> Result<(), Box<dyn std::error::Error>> {
     };
 
     let filter = FrameFilter::new();
-    let mut app = App::new(bus, classifier, rx, err_rx, filter);
+    let mut app = App::new(bus, rx, err_rx, filter);
     app.set_backend_name(backend_name);
     app.set_iface_name(iface_name);
 
