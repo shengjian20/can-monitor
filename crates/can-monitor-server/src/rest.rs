@@ -130,7 +130,7 @@ fn parse_frame(req: &SendFrameRequest) -> Result<CanFrame, String> {
     let can_id = if req.ext {
         CanId::new_extended(raw_id)
     } else {
-        CanId::new_standard(raw_id as u16)
+        CanId::new_standard_checked(raw_id)
     }
     .map_err(|e| format!("CAN ID 错误: {e}"))?;
 

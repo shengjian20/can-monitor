@@ -153,6 +153,21 @@ impl CanId {
         })
     }
 
+    /// 从 u32 原始值安全构造标准帧 (11 位) CAN ID。
+    ///
+    /// 与 [`new_standard`] 的区别: 入参是 u32, 内部**先查 11 位范围再转型**,
+    /// 避免 `as u16` 截断先于范围校验 (如 0x10000 会被静默截断为 0x0000,
+    /// 0x1FFF0000 截为 0x0000)。供 REST / Tauri 等外部输入边界使用。
+    ///
+    /// @param id 可能超出 11 位范围的 u32 原始值。
+    /// @return 成功返回标准帧 [`CanId`];超出 0x7FF 返回 [`CanError::InvalidId`]。
+    pub fn new_standard_checked(id: u32) -> Result<Self> {
+        if id > MAX_STANDARD_ID {
+            return Err(CanError::InvalidId);
+        }
+        Self::new_standard(id as u16)
+    }
+
     /// 构造扩展帧 (29 位) CAN ID。
     ///
     /// @param id 29 位标识符,合法范围 0x00000000 ~ 0x1FFFFFFF。
@@ -565,6 +580,29 @@ mod tests {
     fn standard_id_out_of_range_err() {
         assert_eq!(CanId::new_standard(0x800), Err(CanError::InvalidId));
         assert_eq!(CanId::new_standard(u16::MAX), Err(CanError::InvalidId));
+    }
+
+    /// `new_standard_checked`: 低 16 位落入合法区间但 bit≥16 置位的值 (如
+    /// 0x10000-0x107FF、0x1FFF0000) 必须拒绝, 而非被 `as u16` 静默截断接受。
+    #[test]
+    fn new_standard_checked_rejects_truncating_overflow() {
+        for id in [0x10000u32, 0x107FF, 0x1FFF_0000, 0x800, u32::MAX] {
+            assert_eq!(
+                CanId::new_standard_checked(id),
+                Err(CanError::InvalidId),
+                "0x{id:X} 应先查界再转型, 不得静默截断"
+            );
+        }
+    }
+
+    /// `new_standard_checked`: 合法 11 位值行为与 `new_standard` 一致。
+    #[test]
+    fn new_standard_checked_accepts_valid_ids() {
+        for id in [0u32, 0x181, 0x7FF] {
+            let can_id = CanId::new_standard_checked(id).unwrap();
+            assert_eq!(can_id.raw_id(), id);
+            assert!(can_id.is_standard());
+        }
     }
 
     /// 扩展帧超界 (0x20000000) 应返回 InvalidId。

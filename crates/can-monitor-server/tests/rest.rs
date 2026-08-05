@@ -112,6 +112,56 @@ async fn send_bad_frame_is_bad_request() {
     assert_eq!(resp.status(), StatusCode::BAD_REQUEST, "非法帧应 400");
 }
 
+/// `POST /api/send` 标准帧 ID 超出 11 位范围 → 400。
+///
+/// 回归 P1 (F2): 过去 `CanId::new_standard(raw_id as u16)` 先截断再校验,
+/// 0x1FFF0000 / 0x10000 这类低 16 位落入合法区间的值会被静默截断接受,
+/// 现在必须先查界再转型, 一律拒绝。
+#[tokio::test]
+async fn send_standard_id_out_of_range_is_bad_request() {
+    let app = router(make_bus(), true);
+    for id in ["0x1FFF0000", "0x10000", "0x107FF", "0x800"] {
+        let body = format!(r#"{{"id":"{id}","ext":false,"data":"01 02 03"}}"#);
+        let resp = post_json(app.clone(), "/api/send", &body).await;
+        assert_eq!(
+            resp.status(),
+            StatusCode::BAD_REQUEST,
+            "标准帧 ID {id} 超出 0x7FF 应 400 (不得静默截断)"
+        );
+        let json = body_json(resp).await;
+        assert!(
+            json.get("error").is_some(),
+            "400 响应应带中文 error 说明: {json}"
+        );
+    }
+}
+
+/// `POST /api/send` 合法标准帧 ID (≤0x7FF) 仍接受。
+#[tokio::test]
+async fn send_valid_standard_id_succeeds() {
+    let app = router(make_bus(), true);
+    let resp = post_json(
+        app,
+        "/api/send",
+        r#"{"id":"0x181","ext":false,"data":"01 02 03"}"#,
+    )
+    .await;
+    assert_eq!(resp.status(), StatusCode::OK, "合法标准帧 ID 0x181 应 200");
+}
+
+/// `POST /api/send` 合法扩展帧 ID (≤0x1FFFFFFF) 仍接受, 行为不变。
+#[tokio::test]
+async fn send_valid_extended_id_succeeds() {
+    let app = router(make_bus(), true);
+    let resp = post_json(
+        app,
+        "/api/send",
+        r#"{"id":"0x18FF1234","ext":true,"data":"01 02 03"}"#,
+    )
+    .await;
+    assert_eq!(resp.status(), StatusCode::OK, "合法扩展帧 ID 应 200");
+}
+
 /// `GET /api/status`: 200 + running 字段 (默认关闭) + 计数器字段齐全。
 #[tokio::test]
 async fn status_reports_running_and_counts() {

@@ -362,34 +362,47 @@ pub fn unsubscribe_frames(channel_id: u64, state: State<'_, TauriState>) -> Resu
     Ok(())
 }
 
+/// 从原始帧字段构建 [`CanFrame`] (供 `send_frame` 使用, 抽离便于单元测试)。
+///
+/// 与 REST 端 `parse_frame` 同构; 标准帧分支用 [`CanId::new_standard_checked()`]
+/// **先查 11 位范围再转型**, 拒绝 `as u16` 截断先于校验的静默超界值
+/// (如 0x10000 / 0x1FFF0000)。
+///
+/// @param id   原始 CAN ID 字符串 (十进制或 `0x` 前缀十六进制)。
+/// @param ext  是否扩展帧。
+/// @param data 空格分隔十六进制数据。
+/// @return 构建成功的 [`CanFrame`]; ID 超界 / 格式非法返回中文错误。
+fn build_frame(id: &str, ext: bool, data: &str) -> Result<CanFrame, String> {
+    // 解析 ID。
+    let raw_id: u32 = if id.starts_with("0x") || id.starts_with("0X") {
+        u32::from_str_radix(&id[2..], 16)
+    } else {
+        id.parse()
+    }
+    .map_err(|_| format!("CAN ID 格式无效: {id}"))?;
+
+    let can_id = if ext {
+        CanId::new_extended(raw_id)
+    } else {
+        CanId::new_standard_checked(raw_id)
+    }
+    .map_err(|e| format!("CAN ID 错误: {e}"))?;
+
+    // 解析数据。
+    let data_bytes: Vec<u8> = data
+        .split_whitespace()
+        .map(|s| u8::from_str_radix(s, 16).map_err(|_| format!("数据字节无效: {s}")))
+        .collect::<Result<Vec<_>, _>>()?;
+
+    CanFrame::new(can_id, data_bytes).map_err(|e| format!("构造帧失败: {e}"))
+}
+
 /// 发送一帧到总线。
 ///
 /// @param frame 帧 JSON (id + ext + data)。
 #[tauri::command]
 pub fn send_frame(frame: SendFrameRequest, state: State<'_, TauriState>) -> Result<(), String> {
-    // 解析 ID。
-    let raw_id: u32 = if frame.id.starts_with("0x") || frame.id.starts_with("0X") {
-        u32::from_str_radix(&frame.id[2..], 16)
-    } else {
-        frame.id.parse()
-    }
-    .map_err(|_| format!("CAN ID 格式无效: {}", frame.id))?;
-
-    let can_id = if frame.ext {
-        CanId::new_extended(raw_id)
-    } else {
-        CanId::new_standard(raw_id as u16)
-    }
-    .map_err(|e| format!("CAN ID 错误: {e}"))?;
-
-    // 解析数据。
-    let data: Vec<u8> = frame
-        .data
-        .split_whitespace()
-        .map(|s| u8::from_str_radix(s, 16).map_err(|_| format!("数据字节无效: {s}")))
-        .collect::<Result<Vec<_>, _>>()?;
-
-    let can_frame = CanFrame::new(can_id, data).map_err(|e| format!("构造帧失败: {e}"))?;
+    let can_frame = build_frame(&frame.id, frame.ext, &frame.data)?;
 
     let bus_guard = state
         .bus
@@ -427,5 +440,38 @@ pub fn get_status(state: State<'_, TauriState>) -> Result<StatusJson, String> {
             error: 0,
             dropped: 0,
         }),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 标准帧 ID 超出 11 位范围 → Err (回归 F2 P1: 不得静默截断)。
+    #[test]
+    fn build_frame_rejects_out_of_range_standard_id() {
+        for id in ["0x1FFF0000", "0x10000", "0x107FF", "0x800"] {
+            let err = build_frame(id, false, "01 02 03").unwrap_err();
+            assert!(
+                err.contains("CAN ID"),
+                "标准帧 ID {id} 应被拒绝并返回中文错误: {err}"
+            );
+        }
+    }
+
+    /// 合法标准帧 ID (≤0x7FF) 仍接受。
+    #[test]
+    fn build_frame_accepts_valid_standard_id() {
+        let frame = build_frame("0x181", false, "01 02 03").unwrap();
+        assert_eq!(frame.id().raw_id(), 0x181);
+        assert!(!frame.id().is_extended());
+    }
+
+    /// 合法扩展帧 ID (≤0x1FFFFFFF) 仍接受, 行为不变。
+    #[test]
+    fn build_frame_accepts_valid_extended_id() {
+        let frame = build_frame("0x18FF1234", true, "01 02 03").unwrap();
+        assert_eq!(frame.id().raw_id(), 0x18FF1234);
+        assert!(frame.id().is_extended());
     }
 }
