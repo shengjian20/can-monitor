@@ -1,0 +1,5 @@
+/target
+.omo/evidence/
+third_party/
+*.log
+.DS_Store

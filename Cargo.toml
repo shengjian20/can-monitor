@@ -1,0 +1,15 @@
+[workspace]
+members = [
+    "crates/can-types",
+    "crates/can-socketcan",
+    "crates/can-usbvci",
+    "crates/canopen-stack",
+    "crates/j1939-stack",
+    "crates/can-monitor",
+]
+resolver = "2"
+
+[profile.release]
+lto = true
+strip = true
+codegen-units = 1
