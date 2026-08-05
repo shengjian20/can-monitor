@@ -117,14 +117,24 @@ checksum = "1fd0f2584146f6f2ef48085050886acf353beff7305ebd1ae69500e27c67f64b"
 name = "can-monitor"
 version = "0.1.0"
 dependencies = [
+ "can-monitor-core",
  "can-socketcan",
  "can-types",
  "can-usbvci",
  "canopen-stack",
- "crossbeam-channel",
  "crossterm 0.28.1",
  "j1939-stack",
  "ratatui",
+]
+
+[[package]]
+name = "can-monitor-core"
+version = "0.1.0"
+dependencies = [
+ "can-types",
+ "canopen-stack",
+ "crossbeam-channel",
+ "j1939-stack",
 ]
 
 [[package]]

@@ -25,17 +25,17 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use can_types::CanMessage;
-use crossbeam_channel::Receiver;
+use can_monitor_core::bus::MonitorBus;
+use can_monitor_core::classifier::FrameClassifier;
+use can_monitor_core::filter::FrameFilter;
+use can_monitor_core::logger::CandumpLogger;
+use can_monitor_core::crossbeam_channel::Receiver;
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind};
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Style};
 use ratatui::widgets::{Block, Borders, Paragraph};
 use ratatui::Frame;
 
-use crate::bus::MonitorBus;
-use crate::classifier::FrameClassifier;
-use crate::filter::FrameFilter;
-use crate::logger::CandumpLogger;
 use crate::tui::send::SendPanel;
 use crate::tui::status::{render_status_bar, StatusBarData};
 use crate::tui::stream::MessageStream;
@@ -52,7 +52,7 @@ pub struct DisplayMessage {
     ///
     /// 生产路径下 `classify` 恒返回 `Some`, 此处保持 `Option` 仅为
     /// 测试构造未分类消息方便 (如 [`crate::tui::stream`] 的测试桩)。
-    pub parsed: Option<crate::classifier::ParsedMessage>,
+    pub parsed: Option<can_monitor_core::classifier::ParsedMessage>,
 }
 
 /// TUI 应用主结构。
@@ -635,7 +635,7 @@ mod tests {
 
         // 挂载 logger (临时文件)。
         let path = std::env::temp_dir().join(format!("test-{}-key_l.log", std::process::id()));
-        let logger = crate::logger::CandumpLogger::new(&path).unwrap();
+        let logger = can_monitor_core::logger::CandumpLogger::new(&path).unwrap();
         app.set_logger(logger);
         assert!(app.logging_enabled);
 

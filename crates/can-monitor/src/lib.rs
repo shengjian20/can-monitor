@@ -1,27 +1,16 @@
 //! # can-monitor — CAN 监控主程序库
 //!
-//! 提供监控主程序的可复用库部分。当前包含:
-//! - [`classifier`] : 帧分类器, 将原始帧分发到 CANopen / J1939 协议栈;
-//! - [`bus`] : 消息总线, 后台 reader 线程 + 有界 channel 数据通路;
-//! - [`logger`] : candump -L 兼容的 CAN 帧日志记录器。
+//! 提供监控主程序的可复用库部分。核心解析与总线逻辑已提取至
+//! [`can_monitor_core`]: 帧分类器 (`classifier`)、消息总线 (`bus`)、
+//! candump 日志 (`logger`) 与帧过滤引擎 (`filter`)。本 crate 仅保留
+//! 基于 ratatui 的终端用户界面模块 [`tui`]。
 //!
 //! ## 核心数据流
 //!
-//! 后端读帧 → [`bus::MonitorBus`] 的 reader 线程 → [`classifier::FrameClassifier`]
-//! 分类 → 封装为 [`CanMessage`](can_types::CanMessage) 投递到有界 channel,
-//! 供 TUI 层轮询消费。监控开关默认关闭, 需显式开启后才会消费后端帧。
-
-/// 协议无关的帧分类器模块。
-pub mod classifier;
-
-/// 消息总线与后台读取线程模块。
-pub mod bus;
-
-/// candump 兼容的日志记录器模块。
-pub mod logger;
-
-/// 帧过滤引擎 (过滤条件 + ID 高亮规则)。
-pub mod filter;
+//! 后端读帧 → [`can_monitor_core::bus::MonitorBus`] 的 reader 线程 →
+//! [`can_monitor_core::classifier::FrameClassifier`] 分类 →
+//! 封装为 [`CanMessage`](can_types::CanMessage) 投递到有界 channel,
+//! 由 [`tui`] 层轮询消费。监控开关默认关闭, 需显式开启后才会消费后端帧。
 
 /// 基于 ratatui 的终端用户界面模块。
 pub mod tui;

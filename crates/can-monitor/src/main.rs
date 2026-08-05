@@ -6,11 +6,11 @@
 use std::process;
 use std::sync::{Arc, Mutex};
 
-use can_monitor::bus::MonitorBus;
-use can_monitor::classifier::FrameClassifier;
-use can_monitor::filter::FrameFilter;
-use can_monitor::logger::CandumpLogger;
 use can_monitor::tui::app::{parse_args, App};
+use can_monitor_core::bus::MonitorBus;
+use can_monitor_core::classifier::FrameClassifier;
+use can_monitor_core::filter::FrameFilter;
+use can_monitor_core::logger::CandumpLogger;
 use can_types::{BackendConfig, BackendKind, CanBackend};
 
 fn main() {

@@ -5,7 +5,7 @@
 //!
 //! - **列**: 时间戳 / ID / DLC / 数据字节 / 协议摘要 / 收发方向
 //! - **滚动**: 尾部自动跟随 (`follow_tail`); 用户上滚暂停, 按 `End` 恢复
-//! - **高亮**: 接收 [`crate::filter::Highlighter`], 按命中规则为行着色
+//! - **高亮**: 接收 [`can_monitor_core::filter::Highlighter`], 按命中规则为行着色
 //!
 //! 组件本身不持有消息数据, 渲染时由调用方传入 `&[DisplayMessage]` 切片。
 
@@ -17,8 +17,8 @@ use ratatui::widgets::{Block, Borders, Cell, Row, Table, TableState};
 
 use can_types::Direction;
 
-use crate::classifier::ParsedMessage;
-use crate::filter::{HighlightStyle, Highlighter};
+use can_monitor_core::classifier::ParsedMessage;
+use can_monitor_core::filter::{HighlightStyle, Highlighter};
 use crate::tui::app::DisplayMessage;
 
 /// 报文流列表组件。
@@ -429,7 +429,7 @@ pub fn highlight_color(style: HighlightStyle) -> Color {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::filter::{HighlightRule, Highlighter};
+    use can_monitor_core::filter::{HighlightRule, Highlighter};
     use can_types::{BackendKind, CanFrame, CanId, CanMessage};
 
     /// 构造标准帧 DisplayMessage (无时间戳, 无 parsed)。

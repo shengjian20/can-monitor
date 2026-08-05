@@ -1,0 +1,10 @@
+[package]
+name = "can-monitor-core"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+can-types = { path = "../can-types" }
+canopen-stack = { path = "../canopen-stack" }
+j1939-stack = { path = "../j1939-stack" }
+crossbeam-channel = "0.5"

@@ -5,6 +5,7 @@ members = [
     "crates/can-usbvci",
     "crates/canopen-stack",
     "crates/j1939-stack",
+    "crates/can-monitor-core",
     "crates/can-monitor",
 ]
 resolver = "2"
