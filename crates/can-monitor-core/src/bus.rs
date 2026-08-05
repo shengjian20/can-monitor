@@ -1,14 +1,15 @@
 //! # 消息总线
 //!
-//! 在后台 reader 线程中持续从后端读帧、分类, 并通过**有界** channel 投递给
-//! 上层 (TUI 层), 同时维护监控开关与各类计数器。
+//! 在后台 reader 线程中持续从后端读帧、分类, 并通过
+//! [`StreamBroadcaster`](crate::broadcaster::StreamBroadcaster) 广播
+//! 到每个消费者 (每消费者独立有界队列), 同时维护监控开关与各类计数器。
 //!
 //! ## 监控开关语义
 //!
 //! 监控开关 **默认关闭**: reader 线程只在
 //! [`MonitorBus::set_monitoring`](crate::bus::MonitorBus::set_monitoring)
-//! 显式开启后才开始消费后端帧; 关闭时线程休眠轮询开关, **不触碰后端**。投递
-//! channel 采用有界容量, 满时发送阻塞即天然背压, 不会因无人消费而无界增长。
+//! 显式开启后才开始消费后端帧; 关闭时线程休眠轮询开关, **不触碰后端**。广播
+//! 采用有界队列 + `try_send` (非阻塞): 消费者慢时丢弃新帧, **绝不阻塞 reader**。
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -18,10 +19,9 @@ use std::time::Duration;
 use can_types::{BackendKind, CanBackend, CanError, CanFrame, CanMessage, Direction};
 use crossbeam_channel::{Receiver, Sender};
 
+use crate::broadcaster::{ConsumerId, StreamBroadcaster};
 use crate::classifier::{FrameClassifier, ParsedMessage};
 
-/// 消息投递 channel 容量 (有界, 防止无界增长导致内存泄漏)。
-const CHANNEL_CAPACITY: usize = 1024;
 /// 错误 channel 容量。
 const ERROR_CHANNEL_CAPACITY: usize = 64;
 /// 发送 channel 容量 (帧下发队列)。
@@ -34,15 +34,14 @@ const POLL_INTERVAL: Duration = Duration::from_millis(20);
 /// 消息总线。
 ///
 /// 由 [`MonitorBus::new`] 创建, 返回总线本体与供消费的两条 channel 接收端:
-/// - `Receiver<CanMessage>`: 已分类转发的统一消息流;
+/// - `Receiver<CanMessage>`: 默认消费者的消息流 (内部经 [`StreamBroadcaster`]
+///   广播, 可再经 [`MonitorBus::subscribe`] 订阅更多消费者);
 /// - `Receiver<String>`: reader 线程遇到的后端错误描述。
 ///
 /// 总线本身不依赖具体后端: reader 线程通过 [`CanBackend`] trait 泛型接入。
 pub struct MonitorBus {
-    /// 消息投递发送端。
-    tx: Sender<CanMessage>,
-    /// 消息接收端 (保留所有权, 使 channel 持续存活)。
-    _rx: Receiver<CanMessage>,
+    /// 消息广播器 (每消费者独立有界队列, reader 发布, 多前端消费)。
+    broadcast: Arc<StreamBroadcaster<CanMessage>>,
     /// 错误投递发送端。
     err_tx: Sender<String>,
     /// 帧发送端 (TUI 下发面板 → reader 线程 → 后端写入)。
@@ -67,17 +66,19 @@ impl MonitorBus {
     /// 创建消息总线。
     ///
     /// 监控开关初始为**关闭** (需 [`MonitorBus::set_monitoring`] 显式开启);
-    /// 各计数器归零。
+    /// 各计数器归零。总线内部使用 [`StreamBroadcaster`] 广播: 创建时自动订阅
+    /// 一个默认消费者, 其接收端作为三元组返回; 上层可经
+    /// [`MonitorBus::subscribe`] 追加更多消费者。
     ///
-    /// @return 三元组: (总线, 消息接收端, 错误接收端)。
+    /// @return 三元组: (总线, 默认消费者消息接收端, 错误接收端)。
     pub fn new() -> (MonitorBus, Receiver<CanMessage>, Receiver<String>) {
-        let (tx, rx) = crossbeam_channel::bounded(CHANNEL_CAPACITY);
+        let broadcast = Arc::new(StreamBroadcaster::new());
+        let (_default_id, rx) = broadcast.subscribe();
         let (err_tx, err_rx) = crossbeam_channel::bounded(ERROR_CHANNEL_CAPACITY);
         let (send_tx, send_rx) = crossbeam_channel::bounded(SEND_CHANNEL_CAPACITY);
         (
             MonitorBus {
-                tx,
-                _rx: rx.clone(),
+                broadcast,
                 err_tx,
                 send_tx,
                 send_rx,
@@ -98,7 +99,8 @@ impl MonitorBus {
     /// 线程循环行为:
     /// - **监控关闭**时休眠轮询开关, 不读取后端 (不消费帧);
     /// - **监控开启**时以 `READ_TIMEOUT` (100ms) 阻塞读一帧, 分类后封装为
-    ///   [`CanMessage`] (方向恒为 [`Direction::Rx`]) 投递到消息 channel,
+    ///   [`CanMessage`] (方向恒为 [`Direction::Rx`]) **广播**到所有消费者
+    ///   (每消费者独立有界队列, 队列满丢弃新帧, 绝不阻塞 reader),
     ///   并累计对应计数器;
     /// - 读取**超时** ([`CanError::Timeout`]) 视为正常, 直接继续下一轮;
     /// - 其他**后端错误**累计 `error_count` 并写入错误 channel 后继续。
@@ -118,7 +120,7 @@ impl MonitorBus {
     where
         B: CanBackend + Send + 'static,
     {
-        let tx = self.tx.clone();
+        let broadcast = Arc::clone(&self.broadcast);
         let err_tx = self.err_tx.clone();
         let send_rx = self.send_rx.clone();
         let running = Arc::clone(&self.running);
@@ -161,8 +163,8 @@ impl MonitorBus {
                                 ParsedMessage::Raw(_) => {}
                             }
                             let msg = CanMessage::new(frame, source, Direction::Rx);
-                            // 有界 channel: 满时阻塞即天然背压, 不无界堆积。
-                            let _ = tx.send(msg);
+                            // 广播: try_send 语义, 消费者慢时丢弃新帧, 绝不阻塞。
+                            broadcast.publish(&msg);
                         }
                         Err(CanError::Timeout) => {}
                         Err(e) => {
@@ -224,6 +226,47 @@ impl MonitorBus {
     /// @return 读取后端时发生非超时错误的次数。
     pub fn error_count(&self) -> u64 {
         self.error_count.load(Ordering::Relaxed)
+    }
+
+    /// 订阅广播流, 获取独立的消息接收端 (供多前端 / 多消费者使用)。
+    ///
+    /// 每个消费者拥有独立有界队列; 消费者慢时丢弃新帧, 不影响 reader 线程。
+    ///
+    /// @return 二元组: (消费者标识, 该消费者的消息接收端)。
+    pub fn subscribe(&self) -> (ConsumerId, Receiver<CanMessage>) {
+        self.broadcast.subscribe()
+    }
+
+    /// 订阅广播流并指定消费者队列容量 (有界)。
+    ///
+    /// 用于为高频消费者预留更大缓冲, 或测试小容量队列的丢弃行为。
+    ///
+    /// @param capacity 消费者队列容量。
+    /// @return 二元组: (消费者标识, 该消费者的消息接收端)。
+    pub fn subscribe_with_capacity(&self, capacity: usize) -> (ConsumerId, Receiver<CanMessage>) {
+        self.broadcast.subscribe_with_capacity(capacity)
+    }
+
+    /// 显式取消订阅 (或直接 drop 接收端, 发布时惰性回收)。
+    ///
+    /// @param id 消费者标识。
+    /// @return `true` 表示该消费者存在并被移除。
+    pub fn unsubscribe(&self, id: ConsumerId) -> bool {
+        self.broadcast.unsubscribe(id)
+    }
+
+    /// 因消费者队列已满而丢弃的帧总数。
+    ///
+    /// @return 广播路径丢弃计数 (供状态栏 / UI 展示慢消费者压力)。
+    pub fn dropped_frames(&self) -> u64 {
+        self.broadcast.dropped()
+    }
+
+    /// 成功投递到消费者队列的帧总数。
+    ///
+    /// @return 广播路径成功投递计数。
+    pub fn consumed_frames(&self) -> u64 {
+        self.broadcast.consumed()
     }
 
     /// 向总线发送一帧 (TUI 下发面板调用)。
@@ -409,6 +452,60 @@ mod tests {
         let errs: Vec<String> = err_rx.try_iter().collect();
         assert_eq!(errs.len(), 1);
         assert!(errs[0].contains("总线错误"));
+
+        bus.shutdown();
+    }
+
+    /// 慢消费者不消费 → 其队列满后 drop 计数增长, 且 reader 永不阻塞
+    /// (仍能读完所有后续帧, 其他消费者照常收流)。
+    #[test]
+    fn slow_consumer_never_blocks_reader() {
+        let (bus, _slow_rx, _err_rx) = MonitorBus::new(); // 慢消费者: 默认接收端, 不消费
+                                                          // 快消费者: 大容量队列, 排除 "排空线程暂时落后导致自身丢帧" 的竞态。
+        let (_fast_id, fast_rx) = bus.subscribe_with_capacity(100_000);
+
+        // 构造 3000 帧 (远超默认队列容量 1024, 足以填满慢消费者队列)。
+        let mut results = Vec::new();
+        for i in 0..3000u32 {
+            results.push(Ok(frame(0x181, &i.to_le_bytes())));
+        }
+        let backend = MockBackend::new(results);
+        let classifier = Arc::new(Mutex::new(FrameClassifier::default()));
+        bus.start_reader(backend.clone(), classifier, BackendKind::SocketCan)
+            .unwrap();
+
+        // 快消费者在线程中排空所有帧 (带超时, 避免测试失败时挂死)。
+        let drainer = std::thread::spawn(move || {
+            let mut count = 0;
+            let deadline = Instant::now() + Duration::from_secs(10);
+            while count < 3000 && Instant::now() < deadline {
+                match fast_rx.recv_timeout(Duration::from_millis(50)) {
+                    Ok(_) => count += 1,
+                    Err(crossbeam_channel::RecvTimeoutError::Timeout) => {}
+                    Err(crossbeam_channel::RecvTimeoutError::Disconnected) => break,
+                }
+            }
+            count
+        });
+
+        bus.set_monitoring(true);
+
+        // reader 读完全部 3000 帧 (若广播路径阻塞过, 这里必然超时)。
+        wait_until(|| bus.total_frames() >= 3000);
+        assert_eq!(backend.remaining(), 0);
+
+        // 快消费者收到全部 3000 帧。
+        assert_eq!(drainer.join().unwrap(), 3000);
+
+        // 慢消费者队列满, 丢弃 3000 - 1024 = 1976 帧。
+        assert_eq!(
+            bus.dropped_frames(),
+            3000 - crate::broadcaster::DEFAULT_QUEUE_CAPACITY as u64
+        );
+        assert_eq!(
+            bus.consumed_frames(),
+            3000 + crate::broadcaster::DEFAULT_QUEUE_CAPACITY as u64
+        );
 
         bus.shutdown();
     }

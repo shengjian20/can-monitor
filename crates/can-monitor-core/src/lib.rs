@@ -2,15 +2,18 @@
 //!
 //! 协议无关的 CAN 监控核心逻辑, 供上层 UI (TUI / Web / GUI) 复用。当前包含:
 //! - [`classifier`] : 帧分类器, 将原始帧分发到 CANopen / J1939 协议栈;
-//! - [`bus`] : 消息总线, 后台 reader 线程 + 有界 channel 数据通路;
+//! - [`bus`] : 消息总线, 后台 reader 线程 + 广播分发数据通路;
+//! - [`broadcaster`] : 流广播器, 单生产者 → 多消费者 (每消费者独立有界队列);
 //! - [`logger`] : candump -L 兼容的 CAN 帧日志记录器;
 //! - [`filter`] : 帧过滤引擎 (过滤条件 + ID 高亮规则)。
 //!
 //! ## 核心数据流
 //!
 //! 后端读帧 → [`bus::MonitorBus`] 的 reader 线程 → [`classifier::FrameClassifier`]
-//! 分类 → 封装为 [`CanMessage`](can_types::CanMessage) 投递到有界 channel,
-//! 供上层轮询消费。监控开关默认关闭, 需显式开启后才会消费后端帧。
+//! 分类 → 封装为 [`CanMessage`](can_types::CanMessage) 经
+//! [`broadcaster::StreamBroadcaster`] 广播到每个消费者 (TUI / Web / Tauri 各自
+//! 独立有界队列), 供上层轮询消费。监控开关默认关闭, 需显式开启后才会消费
+//! 后端帧。
 //!
 //! ## 约束
 //!
@@ -22,6 +25,9 @@ pub mod classifier;
 
 /// 消息总线与后台读取线程模块。
 pub mod bus;
+
+/// 流广播器模块 (单生产者 → 多消费者, 每消费者独立有界队列)。
+pub mod broadcaster;
 
 /// candump 兼容的日志记录器模块。
 pub mod logger;
