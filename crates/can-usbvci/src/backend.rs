@@ -26,6 +26,7 @@
 //! 并发/热插拔/帧转换) 用单元测试验证, 无需真实硬件。
 
 use std::collections::VecDeque;
+use std::ffi::CStr;
 #[cfg(all(not(feature = "mock"), not(usbvci_static_link)))]
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard};
@@ -33,7 +34,8 @@ use std::thread;
 use std::time::{Duration, Instant, SystemTime};
 
 use can_types::{
-    BackendConfig, CanBackend, CanError, CanFrame, CanId, Result, MAX_EXTENDED_ID, MAX_STANDARD_ID,
+    BackendConfig, CanBackend, CanDeviceInfo, CanError, CanFrame, CanId, DeviceDetails,
+    DeviceDiscoverer, DeviceKind, Result, MAX_EXTENDED_ID, MAX_STANDARD_ID,
 };
 
 #[cfg(not(feature = "mock"))]
@@ -44,9 +46,7 @@ use core::ffi::c_void;
 
 #[cfg(not(feature = "mock"))]
 use crate::ffi::STATUS_OK;
-#[cfg(not(feature = "mock"))]
-use crate::ffi::VCI_BOARD_INFO;
-use crate::ffi::{VCI_CAN_OBJ, VCI_INIT_CONFIG};
+use crate::ffi::{VCI_BOARD_INFO, VCI_CAN_OBJ, VCI_INIT_CONFIG};
 
 // ---------------------------------------------------------------------------
 // 常量
@@ -84,6 +84,24 @@ const EMPTY_CAN_OBJ: VCI_CAN_OBJ = VCI_CAN_OBJ {
     Data: [0; 8],
     Reserved: [0; 3],
 };
+
+/// 空 `VCI_BOARD_INFO` 常量, 用于初始化设备枚举缓冲区
+/// (`VCI_FindUsbDevice2` 由驱动按设备数回填, 调用方须先清零)。
+const EMPTY_BOARD_INFO: VCI_BOARD_INFO = VCI_BOARD_INFO {
+    hw_Version: 0,
+    fw_Version: 0,
+    dr_Version: 0,
+    in_Version: 0,
+    irq_Num: 0,
+    can_Num: 0,
+    str_Serial_Num: [0; 20],
+    str_hw_Type: [0; 40],
+    Reserved: [0; 4],
+};
+
+/// `VCI_FindUsbDevice2` 枚举缓冲容量 (栈上板卡信息数组长度)。
+#[cfg(any(not(feature = "mock"), test))]
+const MAX_BOARD_INFO_CAP: usize = 16;
 
 // ---------------------------------------------------------------------------
 // VCI 调用抽象
@@ -172,6 +190,13 @@ pub(crate) trait VciOps: Send + Sync {
     /// @param channel     通道号。
     /// @return 待读帧数; 设备消失返回 [`CanError::DeviceUnplugged`]。
     fn get_rx_num(&self, device_type: u32, device_ind: u32, channel: u32) -> Result<usize>;
+
+    /// 枚举当前接入的 USB 设备 (全局操作, 不区分设备三元组)。
+    ///
+    /// @param out 驱动回填的板卡信息缓冲区 (容量须足够容纳全部设备)。
+    /// @return 找到的设备数量, 不会超过 `out.len()`; 无设备返回 0。
+    #[allow(dead_code)]
+    fn find_usb_devices(&self, out: &mut [VCI_BOARD_INFO]) -> u32;
 }
 
 /// 13 个 VCI 函数指针表 (符号表)。
@@ -441,6 +466,12 @@ impl VciOps for RealVciOps {
         } else {
             Ok(num as usize)
         }
+    }
+
+    fn find_usb_devices(&self, out: &mut [VCI_BOARD_INFO]) -> u32 {
+        // SAFETY: out 为调用方持有的可变切片, 指针与长度匹配, 本次调用内有效;
+        // VCI_FindUsbDevice2 按找到的设备数回填数组, 返回值截断到切片容量。
+        unsafe { (self.syms.find_usb_device2)(out.as_mut_ptr()) }.min(out.len() as u32)
     }
 }
 
@@ -784,6 +815,112 @@ fn frame_to_vci_obj(frame: &CanFrame) -> Result<VCI_CAN_OBJ> {
 }
 
 // ---------------------------------------------------------------------------
+// 设备发现 (VCI_FindUsbDevice2 枚举)
+// ---------------------------------------------------------------------------
+
+/// USBCAN (VCI) 设备发现器。
+///
+/// 通过 VCI 动态库的 `VCI_FindUsbDevice2` 枚举当前接入的 USBCAN 设备
+/// (USBCAN-I/II、USBCAN-E-U/2E-U 等), 构造协议无关的 [`CanDeviceInfo`] 列表,
+/// 型号取自板卡信息的 `str_hw_Type` 字段。库未加载 / 无设备时返回空列表,
+/// 绝不 panic。
+pub struct UsbVciDiscoverer;
+
+impl DeviceDiscoverer for UsbVciDiscoverer {
+    /// 枚举当前接入的 USBCAN 设备。
+    ///
+    /// 真实构建经 `RealVciOps` 动态加载 VCI 库并调用 `VCI_FindUsbDevice2`;
+    /// mock feature 下返回 2 台模拟设备 (与 `MockVciOps::find_usb_devices`
+    /// 数据源一致), 供聚合层 (can-devices) 无硬件测试。
+    ///
+    /// @return 设备列表; 库未加载 / 无设备时返回空列表, 不 panic。
+    fn list_devices() -> Vec<CanDeviceInfo> {
+        #[cfg(feature = "mock")]
+        {
+            mock_list_devices()
+        }
+        #[cfg(not(feature = "mock"))]
+        {
+            real_list_devices()
+        }
+    }
+}
+
+/// 真实枚举: 加载 VCI 库 (失败返回空列表, 不 panic) 后调用 `VCI_FindUsbDevice2`。
+///
+/// @return 设备列表; 库缺失 / 符号缺失 / 无设备均返回空列表。
+#[cfg(not(feature = "mock"))]
+fn real_list_devices() -> Vec<CanDeviceInfo> {
+    let Ok(ops) = RealVciOps::try_new() else {
+        return Vec::new();
+    };
+    list_devices_with(&ops)
+}
+
+/// mock 枚举: 返回 2 台模拟设备 (数据源与 `MockVciOps::find_usb_devices` 相同)。
+///
+/// @return 2 台模拟设备的列表。
+#[cfg(feature = "mock")]
+fn mock_list_devices() -> Vec<CanDeviceInfo> {
+    let mock = [mock_board_info("USBCAN-II"), mock_board_info("USBCAN-E-U")];
+    mock.iter()
+        .enumerate()
+        .map(|(index, info)| board_info_to_device_info(info, index))
+        .collect()
+}
+
+/// 经任意 [`VciOps`] 抽象执行设备枚举 (真实 FFI 或 mock 桩均可注入)。
+///
+/// 栈上分配 [`MAX_BOARD_INFO_CAP`] 个板卡信息槽位, 调用 `VCI_FindUsbDevice2`
+/// 按返回值截断, 无设备时返回空列表 (不 panic)。
+///
+/// @param ops 设备枚举用的 VCI 调用抽象。
+/// @return 设备列表。
+#[cfg(any(not(feature = "mock"), test))]
+fn list_devices_with(ops: &dyn VciOps) -> Vec<CanDeviceInfo> {
+    let mut infos = [EMPTY_BOARD_INFO; MAX_BOARD_INFO_CAP];
+    let count = ops.find_usb_devices(&mut infos) as usize;
+    let count = count.min(infos.len());
+    infos[..count]
+        .iter()
+        .enumerate()
+        .map(|(index, info)| board_info_to_device_info(info, index))
+        .collect()
+}
+
+/// 驱动板卡信息 → 协议无关设备信息。
+///
+/// @param info  驱动回填的板卡信息。
+/// @param index 设备索引 (0 起, 即设备在枚举结果中的序号)。
+/// @return 填好的 [`CanDeviceInfo`]。
+fn board_info_to_device_info(info: &VCI_BOARD_INFO, index: usize) -> CanDeviceInfo {
+    let model = board_info_model(info);
+    CanDeviceInfo {
+        id: index.to_string(),
+        name: model.clone(),
+        kind: DeviceKind::UsbVci,
+        driver: "usbvci".to_string(),
+        details: DeviceDetails::with_model(model),
+        available: true,
+    }
+}
+
+/// 从板卡信息 `str_hw_Type` 提取型号字符串。
+///
+/// C 字符数组以 NUL 结尾: 先用 `CStr::from_bytes_until_nul` 截断到首个 NUL;
+/// 数组填满无 NUL 或含非法 UTF-8 时 lossy 转换, 绝不 panic。
+///
+/// @param info 驱动回填的板卡信息。
+/// @return 型号文本 (空型号返回空字符串)。
+fn board_info_model(info: &VCI_BOARD_INFO) -> String {
+    let raw: Vec<u8> = info.str_hw_Type.iter().map(|&b| b as u8).collect();
+    match CStr::from_bytes_until_nul(&raw) {
+        Ok(cstr) => cstr.to_string_lossy().into_owned(),
+        Err(_) => String::from_utf8_lossy(&raw).into_owned(),
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Mock 设备 (仅 test + feature = "mock", 避免非测试 mock 构建产生未使用告警)
 // ---------------------------------------------------------------------------
 
@@ -815,6 +952,20 @@ impl MockDevice {
             ..Self::default()
         }
     }
+}
+
+/// 构造一台模拟板卡信息 (仅型号字段填入, 其余清零)。
+///
+/// mock 模式下的 `VCI_FindUsbDevice2` 回填结果, 与 [`MockVciOps::find_usb_devices`]
+/// 及 `UsbVciDiscoverer::list_devices` 的 mock 分支共用同一数据源。
+#[cfg(feature = "mock")]
+fn mock_board_info(model: &str) -> VCI_BOARD_INFO {
+    let mut info = EMPTY_BOARD_INFO;
+    info.can_Num = 2;
+    for (dst, src) in info.str_hw_Type.iter_mut().zip(model.as_bytes()) {
+        *dst = *src as i8;
+    }
+    info
 }
 
 /// VCI 调用 mock 实现: 读写内存模拟设备, 不触碰任何 FFI 符号。
@@ -905,6 +1056,13 @@ impl VciOps for MockVciOps {
         } else {
             Ok(device.rx_queue.len())
         }
+    }
+
+    fn find_usb_devices(&self, out: &mut [VCI_BOARD_INFO]) -> u32 {
+        let mock = [mock_board_info("USBCAN-II"), mock_board_info("USBCAN-E-U")];
+        let count = mock.len().min(out.len());
+        out[..count].copy_from_slice(&mock[..count]);
+        count as u32
     }
 }
 
@@ -1184,6 +1342,76 @@ mod mock_tests {
     }
 }
 
+/// 设备发现测试 (需 mock feature): 经 MockVciOps 注入模拟设备, 验证枚举逻辑。
+#[cfg(all(test, feature = "mock"))]
+mod discoverer_tests {
+    use super::*;
+    use can_types::DeviceKind;
+    use std::sync::Arc;
+
+    /// mock 枚举应返回 2 台设备: 型号取自 `str_hw_Type`, kind/driver/available 正确。
+    #[test]
+    fn mock_find_returns_two_devices_with_models() {
+        let device = Arc::new(Mutex::new(MockDevice::new()));
+        let ops = MockVciOps {
+            state: device.clone(),
+        };
+        let devices = list_devices_with(&ops);
+        assert_eq!(devices.len(), 2);
+        assert_eq!(devices[0].id, "0");
+        assert_eq!(devices[0].name, "USBCAN-II");
+        assert_eq!(devices[0].kind, DeviceKind::UsbVci);
+        assert_eq!(devices[0].driver, "usbvci");
+        assert_eq!(devices[0].details.model, "USBCAN-II");
+        assert!(devices[0].available);
+        assert_eq!(devices[1].id, "1");
+        assert_eq!(devices[1].details.model, "USBCAN-E-U");
+    }
+
+    /// 枚举对容量不足的输出缓冲区截断到缓冲容量, 不 panic。
+    #[test]
+    fn mock_find_with_tiny_buffer_no_panic() {
+        let device = Arc::new(Mutex::new(MockDevice::new()));
+        let ops = MockVciOps {
+            state: device.clone(),
+        };
+        let mut infos = [EMPTY_BOARD_INFO; 1];
+        let count = ops.find_usb_devices(&mut infos);
+        assert_eq!(count, 1, "容量不足时应截断到缓冲容量");
+    }
+
+    /// `str_hw_Type` 含非法 UTF-8 字节时 lossy 转换, 不 panic。
+    #[test]
+    fn model_lossy_on_non_utf8() {
+        let mut info = mock_board_info("USBCAN-II");
+        info.str_hw_Type[9] = 0xFFu8 as i8; // 非法 UTF-8 首字节
+        let model = board_info_model(&info);
+        assert!(
+            model.starts_with("USBCAN"),
+            "lossy 应保留 ASCII 前缀, 得到 {model:?}"
+        );
+    }
+
+    /// `str_hw_Type` 填满 40 字节无 NUL 时按全数组 lossy 转换, 不 panic。
+    #[test]
+    fn model_full_array_without_nul() {
+        let info = VCI_BOARD_INFO {
+            str_hw_Type: [b'X' as i8; 40],
+            ..EMPTY_BOARD_INFO
+        };
+        let model = board_info_model(&info);
+        assert_eq!(model.len(), 40, "无 NUL 时应取全 40 字节");
+    }
+
+    /// discoverer 公开入口 (mock feature) 返回 2 台模拟设备, 不 panic。
+    #[test]
+    fn discoverer_list_devices_in_mock() {
+        let devices = UsbVciDiscoverer::list_devices();
+        assert_eq!(devices.len(), 2);
+        assert!(devices.iter().all(|d| d.kind == DeviceKind::UsbVci));
+    }
+}
+
 /// 真实库加载 smoke test (feature = "real-ffi"): 验证 libloading 动态加载路径。
 ///
 /// 本机 third_party/controlcan/<arch>/libcontrolcan.so 存在时真实加载并解析全部
@@ -1247,6 +1475,14 @@ mod real_ffi_tests {
         assert!(
             matches!(status, 0 | 1 | u32::MAX),
             "OpenDevice 应返回 0/1/0xFFFFFFFF, 得到 {status}"
+        );
+        // 真实调用枚举符号: 本机无设备时应返回 0 (或不超过缓冲容量的设备数),
+        // 证明 VCI_FindUsbDevice2 可解析且可调用, 不 panic、不回填越界。
+        let mut infos = [EMPTY_BOARD_INFO; MAX_BOARD_INFO_CAP];
+        let found = unsafe { (syms.find_usb_device2)(infos.as_mut_ptr()) };
+        assert!(
+            found == 0 || found <= MAX_BOARD_INFO_CAP as u32,
+            "FindUsbDevice2 应返回 0 (无设备) 或不超过缓冲容量的设备数, 得到 {found}"
         );
     }
 

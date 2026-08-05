@@ -10,6 +10,9 @@
 //! - **`UsbVciBackend` 后端**: 在绑定之上实现 `can-types` 定义的后端 trait
 //!   (经典 CAN 收发、轮询接收、互斥串行化与热插拔重连), 见
 //!   [`UsbVciBackend`]。
+//! - **`UsbVciDiscoverer` 设备发现**: 经 `VCI_FindUsbDevice2` 枚举当前接入的
+//!   USBCAN 设备 (型号取自 `str_hw_Type`), 实现 `can-types` 的设备发现 trait,
+//!   库未加载 / 无设备时返回空列表, 见 [`UsbVciDiscoverer`]。
 //! - **mock 测试**: `mock` feature 下通过 `MockVciOps` 桩替换 FFI 调用,
 //!   无需真实硬件即可验证后端行为。
 //!
@@ -36,7 +39,7 @@
 mod backend;
 mod ffi;
 
-pub use backend::UsbVciBackend;
+pub use backend::{UsbVciBackend, UsbVciDiscoverer};
 
 pub use ffi::{
     VCI_ClearBuffer, VCI_CloseDevice, VCI_FindUsbDevice2, VCI_GetReceiveNum, VCI_InitCAN,

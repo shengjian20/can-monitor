@@ -1,0 +1,10 @@
+[package]
+name = "can-devices"
+version = "0.1.0"
+edition = "2021"
+description = "跨后端 CAN 设备发现聚合层 (SocketCAN + USBCAN)"
+
+[dependencies]
+can-types = { path = "../can-types" }
+can-socketcan = { path = "../can-socketcan" }
+can-usbvci = { path = "../can-usbvci" }
