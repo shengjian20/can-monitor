@@ -19,3 +19,6 @@ pub mod bus;
 
 /// candump 兼容的日志记录器模块。
 pub mod logger;
+
+/// 帧过滤引擎 (过滤条件 + ID 高亮规则)。
+pub mod filter;
