@@ -29,6 +29,9 @@ pub mod logger;
 /// 帧过滤引擎 (过滤条件 + ID 高亮规则)。
 pub mod filter;
 
+/// 纯 std 的 CLI 参数解析 (无 clap 依赖)。
+pub mod cli;
+
 /// 重新导出 crossbeam-channel, 供上层 crate 复用 channel 类型
 /// (如 [`bus::MonitorBus::new`] 返回的 `Receiver` 接收端)。
 pub use crossbeam_channel;

@@ -6,9 +6,10 @@
 use std::process;
 use std::sync::{Arc, Mutex};
 
-use can_monitor::tui::app::{parse_args, App};
+use can_monitor::tui::app::App;
 use can_monitor_core::bus::MonitorBus;
 use can_monitor_core::classifier::FrameClassifier;
+use can_monitor_core::cli::{parse_args, CliArgs};
 use can_monitor_core::filter::FrameFilter;
 use can_monitor_core::logger::CandumpLogger;
 use can_types::{BackendConfig, BackendKind, CanBackend};
@@ -25,7 +26,7 @@ fn main() {
     }
 }
 
-fn run(cli: can_monitor::tui::app::CliArgs) -> Result<(), Box<dyn std::error::Error>> {
+fn run(cli: CliArgs) -> Result<(), Box<dyn std::error::Error>> {
     let (bus, rx, err_rx) = MonitorBus::new();
     let classifier = Arc::new(Mutex::new(FrameClassifier::default()));
 
