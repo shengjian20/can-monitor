@@ -287,3 +287,199 @@ body,
 .status-proto {
   color: var(--text-muted);
 }
+
+/* ── 设备选择 (手动输入) ────────────────────────────────────── */
+
+.device-select-wrap {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+}
+
+.device-manual {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-1);
+}
+
+.device-manual-input {
+  padding: var(--sp-1) var(--sp-2);
+  font-family: var(--font-mono);
+  font-size: 13px;
+  color: var(--text-primary);
+  background: var(--bg-tertiary);
+  border: 1px solid var(--accent);
+  border-radius: var(--radius);
+  outline: none;
+  width: 160px;
+}
+
+.device-manual-input::placeholder {
+  color: var(--text-muted);
+}
+
+.device-empty-hint {
+  color: var(--text-muted);
+  font-size: 12px;
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+}
+
+.btn-sm {
+  padding: 2px var(--sp-2);
+  font-size: 12px;
+  min-width: 24px;
+}
+
+.btn-manual {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
+/* ── 发送面板 ────────────────────────────────────────────────── */
+
+.send-panel {
+  padding: var(--sp-2) var(--sp-4);
+  background: var(--bg-secondary);
+  border-top: 1px solid var(--border);
+}
+
+.send-row {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+}
+
+.send-label {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-1);
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.send-label-data {
+  flex: 1;
+}
+
+.send-input {
+  padding: var(--sp-1) var(--sp-2);
+  font-family: var(--font-mono);
+  font-size: 13px;
+  color: var(--text-primary);
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  outline: none;
+}
+
+.send-input:focus {
+  border-color: var(--accent);
+}
+
+.send-input::placeholder {
+  color: var(--text-muted);
+}
+
+.send-input-id {
+  width: 100px;
+}
+
+.send-input-data {
+  flex: 1;
+  min-width: 200px;
+}
+
+.send-checkbox-label {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--text-secondary);
+  font-size: 12px;
+  cursor: pointer;
+  user-select: none;
+}
+
+.send-checkbox-label input[type="checkbox"] {
+  accent-color: var(--accent);
+}
+
+.btn-send {
+  color: var(--green);
+  border-color: var(--green);
+  font-weight: 600;
+}
+
+.btn-send:hover:not(:disabled) {
+  background: rgba(63, 185, 80, 0.15);
+}
+
+.send-error {
+  margin-top: var(--sp-1);
+  color: var(--red);
+  font-size: 11px;
+}
+
+/* ── 状态栏 (增强) ──────────────────────────────────────────── */
+
+.status-indicator {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-1);
+  font-weight: 600;
+  font-size: 12px;
+}
+
+.status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  display: inline-block;
+}
+
+.dot-green {
+  background: var(--green);
+  box-shadow: 0 0 4px var(--green);
+}
+
+.dot-red {
+  background: var(--red);
+  box-shadow: 0 0 4px var(--red);
+}
+
+.status-divider {
+  width: 1px;
+  height: 14px;
+  background: var(--border);
+}
+
+.status-warn {
+  color: var(--text-muted);
+}
+
+.status-warn.has-warn {
+  color: var(--yellow);
+  font-weight: 600;
+}
+
+/* ── 底栏布局 ───────────────────────────────────────────────── */
+
+.app-bottom {
+  flex-shrink: 0;
+}
+
+.app-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.app-mode {
+  padding: var(--sp-2) var(--sp-4);
+  background: var(--bg-secondary);
+  font-size: 11px;
+  color: var(--text-muted);
+  border-top: 1px solid var(--border);
+}
