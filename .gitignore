@@ -4,3 +4,6 @@
 .DS_Store
 __pycache__/
 *.pyc
+
+# 内部工作区 (plans/notepads/e2e/evidence/run-continuation 等), 公开仓库时不提交
+.omo/
