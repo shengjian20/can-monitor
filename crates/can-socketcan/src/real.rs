@@ -3,11 +3,16 @@
 //! 直接调用 Linux `AF_CAN` 套接字 syscall (经 `socketcan` crate 封装),
 //! 仅在 `target_os = "linux"` 时编译。
 
+use std::fs;
 use std::io;
+use std::path::Path;
 use std::thread;
 use std::time::{Duration, Instant, SystemTime};
 
-use can_types::{BackendConfig, CanBackend, CanError, CanFrame, CanId, Result};
+use can_types::{
+    BackendConfig, CanBackend, CanDeviceInfo, CanError, CanFrame, CanId, DeviceDetails,
+    DeviceDiscoverer, DeviceKind, Result,
+};
 use socketcan::id::FdFlags;
 use socketcan::{CanAnyFrame, CanFdSocket, CanSocket, EmbeddedFrame, Socket, SocketOptions};
 
@@ -307,6 +312,123 @@ fn fd_flags(frame: &CanFrame) -> FdFlags {
     flags
 }
 
+// ===== 设备发现 (sysfs 扫描) =====
+
+/// `ARPHRD_CAN` 协议号 (Linux `if_arp.h`)。
+///
+/// `can` / `vcan` / `slcan` 接口的 `/sys/class/net/<if>/type` 文件内容均为 280,
+/// 是 sysfs 判定 CAN 接口的权威依据。
+const ARPHRD_CAN: u32 = 280;
+
+/// 已知的 CAN 接口名前缀,作为 `type` 文件缺失时的 fallback 判定。
+const CAN_IFACE_PREFIXES: [&str; 3] = ["can", "vcan", "slcan"];
+
+/// Linux sysfs 网络接口目录。
+const SYSFS_NET_DIR: &str = "/sys/class/net";
+
+/// SocketCAN 设备发现器。
+///
+/// 扫描 Linux sysfs (`/sys/class/net`) 下所有网络接口目录,过滤出 CAN 接口
+/// (vcan / can / slcan),构造协议无关的 [`CanDeviceInfo`] 列表。
+/// 纯 sysfs 扫描,不引入额外系统库或第三方设备枚举依赖,
+/// 保证跨平台 (非 Linux 平台走降级 stub 实现) 依赖面不变。
+pub struct SocketCanDiscoverer;
+
+impl DeviceDiscoverer for SocketCanDiscoverer {
+    /// 枚举当前系统上的 SocketCAN 接口。
+    ///
+    /// @return CAN 接口的 [`CanDeviceInfo`] 列表;系统无任何 CAN 接口
+    ///         (或 sysfs 目录不存在 / 不可读) 时返回空列表,不 panic。
+    fn list_devices() -> Vec<CanDeviceInfo> {
+        scan_sysfs(Path::new(SYSFS_NET_DIR))
+    }
+}
+
+/// 便捷函数:枚举当前系统上的 SocketCAN 接口。
+///
+/// 等价于 [`SocketCanDiscoverer`] 实现 [`DeviceDiscoverer::list_devices`] 的结果。
+///
+/// @return 当前系统可发现的 SocketCAN 接口列表 (无则空列表)。
+pub fn list_devices() -> Vec<CanDeviceInfo> {
+    SocketCanDiscoverer::list_devices()
+}
+
+/// 扫描给定 sysfs 网络目录,返回其中全部 CAN 接口的设备信息。
+///
+/// 纯函数:不访问真实系统路径,扫描逻辑可注入任意目录 (测试用临时目录
+/// 写入 fake `type` / `operstate` / `device/driver` 文件)。
+///
+/// @param net_dir sysfs 网络接口目录 (如 `/sys/class/net`)。
+/// @return CAN 接口的 [`CanDeviceInfo`] 列表,按接口名排序;
+///         目录不存在 / 不可读时返回空列表 (不 panic)。
+fn scan_sysfs(net_dir: &Path) -> Vec<CanDeviceInfo> {
+    let mut devices = Vec::new();
+    let Ok(entries) = fs::read_dir(net_dir) else {
+        return devices;
+    };
+    for entry in entries.flatten() {
+        let iface_dir = entry.path();
+        if !is_can_interface(&iface_dir) {
+            continue;
+        }
+        let name = entry.file_name().to_string_lossy().into_owned();
+        let available = read_file(&iface_dir.join("operstate")).is_some_and(|s| s.trim() == "up");
+        let driver = read_driver(&iface_dir);
+        devices.push(CanDeviceInfo {
+            id: name.clone(),
+            name,
+            kind: DeviceKind::SocketCan,
+            driver,
+            details: DeviceDetails::with_model("SocketCAN"),
+            available,
+        });
+    }
+    devices.sort_by(|a, b| a.id.cmp(&b.id));
+    devices
+}
+
+/// 判定一个 sysfs 接口目录是否属于 CAN 接口。
+///
+/// 权威依据:接口的 `type` 文件内容 == [`ARPHRD_CAN`] (280),真实 CAN 控制器、
+/// `vcan` 虚拟接口与 `slcan` 串口 CAN 均报告该协议号;`type` 文件缺失时
+/// 回退按接口名前缀 (`can` / `vcan` / `slcan`) 判定。
+///
+/// @param iface_dir sysfs 接口目录 (如 `/sys/class/net/vcan0`)。
+/// @return 是 CAN 接口返回 `true`。
+fn is_can_interface(iface_dir: &Path) -> bool {
+    if let Some(ty) = read_file(&iface_dir.join("type")).and_then(|s| s.trim().parse::<u32>().ok())
+    {
+        return ty == ARPHRD_CAN;
+    }
+    let name = iface_dir
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or_default();
+    CAN_IFACE_PREFIXES.iter().any(|p| name.starts_with(p))
+}
+
+/// 读取接口对应的内核驱动名。
+///
+/// 真实硬件 CAN 控制器在 `/sys/class/net/<if>/device/driver` 有驱动符号链接
+/// (如 `mcp251x` / `gs_usb`);vcan 等虚拟接口无该链接,回退默认 `"socketcan"`。
+///
+/// @param iface_dir sysfs 接口目录。
+/// @return 内核驱动名;无法读取时返回 `"socketcan"`。
+fn read_driver(iface_dir: &Path) -> String {
+    fs::read_link(iface_dir.join("device").join("driver"))
+        .ok()
+        .and_then(|t| t.file_name().map(|n| n.to_string_lossy().into_owned()))
+        .unwrap_or_else(|| "socketcan".to_string())
+}
+
+/// 读取 sysfs 文本文件内容。
+///
+/// @param path 文件路径。
+/// @return 文件内容;读取失败 (文件不存在 / 权限不足) 返回 `None`。
+fn read_file(path: &Path) -> Option<String> {
+    fs::read_to_string(path).ok()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -464,6 +586,122 @@ mod tests {
                 assert_eq!(fdf.data(), &[0x55; 64]);
             }
             other => panic!("期望 FD 帧, 实际 {other:?}"),
+        }
+    }
+}
+
+#[cfg(test)]
+mod device_tests {
+    use super::*;
+    use std::fs;
+    use std::path::PathBuf;
+
+    /// 创建唯一的临时目录 (前缀含测试标签与进程号,避免并行测试互撞)。
+    fn temp_dir(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "can-socketcan-discover-{tag}-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// 在临时 net 目录中创建 fake 接口目录 (写 `type` / `operstate` / `uevent`)。
+    fn add_iface(net_dir: &Path, name: &str, ty: &str, operstate: &str) -> PathBuf {
+        let dir = net_dir.join(name);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("type"), format!("{ty}\n")).unwrap();
+        fs::write(dir.join("operstate"), format!("{operstate}\n")).unwrap();
+        fs::write(dir.join("uevent"), format!("INTERFACE={name}\nIFINDEX=1\n")).unwrap();
+        dir
+    }
+
+    /// 扫描应识别 vcan / can / slcan,排除 eth;`available` 取自 `operstate`。
+    #[test]
+    fn scan_sysfs_detects_can_ifaces_and_skips_eth() {
+        let net = temp_dir("mock");
+        add_iface(&net, "vcan0", "280", "up");
+        add_iface(&net, "can0", "280", "down");
+        add_iface(&net, "slcan1", "280", "up");
+        add_iface(&net, "eth0", "1", "up");
+
+        let devices = scan_sysfs(&net);
+        assert_eq!(devices.len(), 3);
+        // 结果按接口名排序
+        assert_eq!(devices[0].id, "can0");
+        assert_eq!(devices[1].id, "slcan1");
+        assert_eq!(devices[2].id, "vcan0");
+
+        let vcan0 = &devices[2];
+        assert_eq!(vcan0.kind, DeviceKind::SocketCan);
+        assert_eq!(vcan0.driver, "socketcan");
+        assert_eq!(vcan0.details.model, "SocketCAN");
+        assert!(vcan0.available);
+        assert!(!devices[0].available, "can0 operstate=down 应标记不可用");
+    }
+
+    /// 目录不存在时返回空列表,不 panic。
+    #[test]
+    fn scan_sysfs_missing_dir_returns_empty() {
+        let net = std::env::temp_dir().join("can-socketcan-does-not-exist-xyz");
+        let devices = scan_sysfs(&net);
+        assert!(devices.is_empty(), "目录不存在应返回空列表且不 panic");
+    }
+
+    /// 空目录返回空列表。
+    #[test]
+    fn scan_sysfs_empty_dir_returns_empty() {
+        let net = temp_dir("empty");
+        assert!(scan_sysfs(&net).is_empty());
+    }
+
+    /// `type` 文件缺失时按接口名前缀回退识别。
+    #[test]
+    fn scan_sysfs_prefix_fallback_when_type_missing() {
+        let net = temp_dir("fallback");
+        let d = net.join("can5");
+        fs::create_dir_all(&d).unwrap();
+        fs::write(d.join("operstate"), "up\n").unwrap();
+        let e = net.join("ether0");
+        fs::create_dir_all(&e).unwrap();
+        fs::write(e.join("operstate"), "up\n").unwrap();
+
+        let devices = scan_sysfs(&net);
+        assert_eq!(devices.len(), 1);
+        assert_eq!(devices[0].id, "can5");
+    }
+
+    /// 硬件驱动符号链接存在时,`driver` 应取链接目标 basename。
+    #[test]
+    fn scan_sysfs_reads_real_hw_driver_from_symlink() {
+        let net = temp_dir("driver");
+        let d = add_iface(&net, "can0", "280", "up");
+        let driver_link = d.join("device").join("driver");
+        fs::create_dir_all(driver_link.parent().unwrap()).unwrap();
+        std::os::unix::fs::symlink("/sys/bus/spi/drivers/mcp251x", &driver_link).unwrap();
+
+        let devices = scan_sysfs(&net);
+        assert_eq!(devices.len(), 1);
+        assert_eq!(devices[0].driver, "mcp251x");
+    }
+
+    /// 本机实扫:有 CAN 接口则列表非空,无则空列表;均不 panic。
+    #[test]
+    fn list_devices_scans_real_sysfs_without_panic() {
+        let devices = SocketCanDiscoverer::list_devices();
+        let net = Path::new(SYSFS_NET_DIR);
+        let has_can = net
+            .read_dir()
+            .map(|it| it.flatten().any(|e| is_can_interface(&e.path())))
+            .unwrap_or(false);
+        if has_can {
+            assert!(
+                devices.iter().any(|d| d.kind == DeviceKind::SocketCan),
+                "本机存在 CAN 接口, 应被列出"
+            );
+        } else {
+            assert!(devices.is_empty(), "本机无 CAN 接口, 应为空列表");
         }
     }
 }

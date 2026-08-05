@@ -10,7 +10,9 @@
 
 use std::time::Duration;
 
-use can_types::{BackendConfig, CanBackend, CanError, CanFrame, Result};
+use can_types::{
+    BackendConfig, CanBackend, CanDeviceInfo, CanError, CanFrame, DeviceDiscoverer, Result,
+};
 
 /// SocketCAN 后端 (非 Linux 平台降级占位)。
 ///
@@ -66,6 +68,26 @@ impl CanBackend for SocketCanBackend {
     }
 }
 
+/// SocketCAN 设备发现器 (非 Linux 平台降级占位)。
+///
+/// 与 Linux 真实实现 (`crate::real::SocketCanDiscoverer`) 同名同 API;非 Linux
+/// 平台无 SocketCAN 子系统,恒返回空列表 (不 panic,不虚构设备)。
+pub struct SocketCanDiscoverer;
+
+impl DeviceDiscoverer for SocketCanDiscoverer {
+    /// 非 Linux 平台无可发现的 SocketCAN 设备。
+    ///
+    /// @return 恒为空列表 (SocketCAN 仅 Linux 可用)。
+    fn list_devices() -> Vec<CanDeviceInfo> {
+        Vec::new()
+    }
+}
+
+/// 非 Linux 平台无可发现的 SocketCAN 设备,恒返回空列表 (不 panic)。
+pub fn list_devices() -> Vec<CanDeviceInfo> {
+    SocketCanDiscoverer::list_devices()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -105,5 +127,12 @@ mod tests {
     fn stub_close_ok() {
         let mut backend = SocketCanBackend { _private: () };
         assert!(backend.close().is_ok());
+    }
+
+    /// 非 Linux 平台设备发现应返回空列表且不 panic。
+    #[test]
+    fn stub_list_devices_empty() {
+        assert!(SocketCanDiscoverer::list_devices().is_empty());
+        assert!(list_devices().is_empty());
     }
 }
