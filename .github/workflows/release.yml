@@ -125,12 +125,17 @@ jobs:
           - os: ubuntu-latest
             platform: linux-x86_64
             vendor_lib: third_party/controlcan/x86_64/libcontrolcan.so
+            zigbuild: false
           - os: ubuntu-24.04-arm
+            # aarch64 用 cargo-zigbuild 以 glibc 2.17 目标编译, 使产物同时兼容
+            # Ubuntu 16.04 (glibc 2.23) 与 24.04 (glibc 2.39) — 见下方 build 步骤
             platform: linux-aarch64
             vendor_lib: third_party/controlcan/aarch64/libcontrolcan.so
+            zigbuild: true
           - os: windows-latest
             platform: windows-x86_64
             vendor_lib: third_party/controlcan/win64/ControlCAN.dll
+            zigbuild: false
     env:
       # gh 上传用 token (与 secrets.GITHUB_TOKEN 等价)
       GH_TOKEN: ${{ github.token }}
@@ -159,8 +164,58 @@ jobs:
 
       # 构建 CLI+TUI+Web 一体二进制 (workspace [profile.release]: lto + strip)
       # 厂商库走运行时 dlopen (T10), 构建期不链接 → 无需特殊依赖
+      # x86_64 / windows: 原生 cargo build (宿主 glibc 即可)
       - name: Build can-monitor binary (release)
+        if: ${{ !matrix.zigbuild }}
         run: cargo build --release -p can-monitor
+
+      # aarch64: 安装 zig (官方 tarball → $HOME/zig) + cargo-zigbuild。
+      # 注意: ubuntu-24.04-arm runner 的 HOST 是 arm64 → 必须装 aarch64-linux 版
+      # zig 与 aarch64 宿主二进制 cargo-zigbuild (不是 x86_64 版)。
+      # zig 0.16.0 = 官方最新 stable; cargo-zigbuild v0.23.0 CI 矩阵实测支持 0.16.0。
+      - name: Install zig + cargo-zigbuild (aarch64)
+        if: ${{ matrix.zigbuild }}
+        shell: bash
+        run: |
+          set -euxo pipefail
+          ZIG_VERSION=0.16.0
+          CZB_VERSION=0.23.0
+          # zig: 官方 aarch64-linux tarball, 解压到 $HOME/zig, 加入 PATH
+          mkdir -p "$HOME/zig"
+          curl -fsSL --retry 5 --retry-delay 2 \
+            -o /tmp/zig.tar.xz \
+            "https://ziglang.org/download/${ZIG_VERSION}/zig-aarch64-linux-${ZIG_VERSION}.tar.xz"
+          tar -xJf /tmp/zig.tar.xz -C "$HOME/zig" --strip-components=1
+          echo "$HOME/zig" >> "$GITHUB_PATH"
+          # cargo-zigbuild: 官方预编译 aarch64 二进制 (免编译, 与 cargo install 等价)
+          mkdir -p "$HOME/czb"
+          curl -fsSL --retry 5 --retry-delay 2 \
+            -o /tmp/czb.tar.xz \
+            "https://github.com/rust-cross/cargo-zigbuild/releases/download/v${CZB_VERSION}/cargo-zigbuild-aarch64-unknown-linux-gnu.tar.xz"
+          tar -xJf /tmp/czb.tar.xz -C "$HOME/czb" --strip-components=1
+          echo "$HOME/czb" >> "$GITHUB_PATH"
+          zig version
+          cargo-zigbuild --version
+
+      # aarch64: 以 glibc 2.17 为目标交叉编译 → 产物仅依赖 GLIBC_2.17,
+      # 兼容 Ubuntu 16.04 (glibc 2.23) 与 24.04 (glibc 2.39)。产物落在
+      # target/aarch64-unknown-linux-gnu/release/ 下。
+      - name: Build can-monitor binary (zigbuild aarch64 glibc 2.17)
+        if: ${{ matrix.zigbuild }}
+        shell: bash
+        run: cargo zigbuild --release -p can-monitor --target aarch64-unknown-linux-gnu.2.17
+
+      # aarch64: readelf 断言产物最大 GLIBC ≤ 2.23 (版本比较用 sort -V), 超限构建失败
+      - name: Verify GLIBC <= 2.23 (aarch64)
+        if: ${{ matrix.zigbuild }}
+        shell: bash
+        run: |
+          set -euxo pipefail
+          BIN="target/aarch64-unknown-linux-gnu/release/can-monitor"
+          MAX=$(readelf --version-info "${BIN}" | grep -oE "GLIBC_[0-9.]+" | sort -V | tail -1 | cut -d_ -f2)
+          echo "max GLIBC_${MAX}"
+          [[ "${MAX}" < "2.24" ]] || { echo "FAIL: GLIBC ${MAX} > 2.23" >&2; exit 1; }
+          echo "PASS: max GLIBC ${MAX} <= 2.23 (16.04/24.04 compatible)"
 
       # ---- Linux (x86_64 / aarch64): 组装目录 → tar.gz ----
       - name: Package (Linux tar.gz)
@@ -173,7 +228,13 @@ jobs:
           ASSET="can-monitor-${VERSION}-${PLAT}.tar.gz"
           STAGE="staging/can-monitor-${VERSION}-${PLAT}"
           mkdir -p "${STAGE}"
-          cp target/release/can-monitor "${STAGE}/can-monitor"
+          # zigbuild 产物在 target/<triple>/release/ 下; 原生构建在 target/release/ 下
+          if [[ "${{ matrix.zigbuild }}" == "true" ]]; then
+            BIN="target/aarch64-unknown-linux-gnu/release/can-monitor"
+          else
+            BIN="target/release/can-monitor"
+          fi
+          cp "${BIN}" "${STAGE}/can-monitor"
           # 厂商库放二进制同目录 → 加载器 exe 同目录优先, 开箱即用
           cp "${{ matrix.vendor_lib }}" "${STAGE}/libcontrolcan.so"
           cp -r web/dist "${STAGE}/web"
