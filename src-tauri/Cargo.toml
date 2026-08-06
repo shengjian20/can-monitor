@@ -1,6 +1,6 @@
 [package]
 name = "can-monitor-tauri"
-version = "0.1.0"
+version = "0.1.1"
 description = "CAN Monitor — 跨平台桌面 GUI (Tauri v2)"
 edition = "2021"
 
