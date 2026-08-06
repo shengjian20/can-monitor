@@ -1,9 +1,13 @@
 //! # CLI 参数解析
 //!
 //! 纯 std 手写命令行解析 (不依赖 clap), 供上层 UI 复用。
-//! 参数面: `--backend <socketcan|usbvci|none>`、`--iface <name>`、
+//! 参数面: `--backend <socketcan|usbvci[:index][:type]|none>`、`--iface <name>`、
 //! `--fd`、`--log-file <path>`、`--web-write`、`--web-port <addr>`、
 //! `--help` / `-h`。
+//!
+//! usbvci 支持显式设备参数: `--backend usbvci` (自动探测)、`usbvci:21`
+//! (显式类型 21)、`usbvci:0:21` (索引 0 + 类型 21), 由 `can-monitor` 主程序
+//! 解析, 本 crate 仅原样保存 `backend` 字符串。
 
 /// CLI 参数解析结果。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -93,7 +97,7 @@ fn print_usage() {
         "用法: can-monitor [选项]\n\
          \n\
          选项:\n\
-         --backend <socketcan|usbvci|none>  后端类型 (默认 none)\n\
+         --backend <socketcan|usbvci[:ind][:type]|none>  后端类型 (默认 none)\n\
          --iface <name>                     SocketCAN 接口名 (默认 can0)\n\
          --fd                               启用 CANFD\n\
          --log-file <path>                  日志文件路径\n\

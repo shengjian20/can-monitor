@@ -45,13 +45,16 @@ fn run(cli: CliArgs) -> Result<(), Box<dyn std::error::Error>> {
                 .map_err(|e| format!("启动 SocketCAN reader 失败: {e}"))?;
             ("SocketCAN".to_string(), iface)
         }
-        "usbvci" => {
+        "none" => ("None".to_string(), cli.iface),
+        spec if spec == "usbvci" || spec.starts_with("usbvci:") => {
+            // 支持 `--backend usbvci` / `usbvci:21` / `usbvci:0:21` 三种形式
+            // (显式指定设备类型), 见 parse_usbvci_backend。
+            let (device_index, device_type) = parse_usbvci_backend(spec)?;
             let config = BackendConfig::UsbVci {
-                // 配置类型仅作探测候选之一: 后端会先经 VCI_FindUsbDevice2 读板卡
-                // 信息按 hw_type 映射首选类型 (2E_U = 21), 再依次回退到本值 /
-                // 2E_U / USBCAN2, 首个打开成功的类型即有效设备类型。
-                device_type: can_usbvci::VCI_USBCAN_2E_U,
-                device_index: 0,
+                // device_type 为探测首候选 (0=未指定); 后端无 find 探测,
+                // 依次尝试 [本值, 2E_U, USBCAN2] 去重, 首个成功即有效类型。
+                device_type,
+                device_index,
                 channel: 0,
             };
             let backend = can_usbvci::UsbVciBackend::open(&config)
@@ -60,7 +63,6 @@ fn run(cli: CliArgs) -> Result<(), Box<dyn std::error::Error>> {
                 .map_err(|e| format!("启动 USBCAN reader 失败: {e}"))?;
             ("USBCAN".to_string(), cli.iface)
         }
-        "none" => ("None".to_string(), cli.iface),
         other => {
             return Err(format!("未知后端: {other} (可选: socketcan, usbvci, none)").into());
         }
@@ -93,6 +95,44 @@ fn run(cli: CliArgs) -> Result<(), Box<dyn std::error::Error>> {
     // 干净退出: 冲刷日志缓冲并关闭文件, 避免丢缓冲 (Task 21 实测发现)。
     app.close_logger()?;
     Ok(())
+}
+
+/// 解析 `--backend usbvci[:index][:type]` 形式的显式设备参数。
+///
+/// - `usbvci`      → 索引 0, 类型默认 [`VCI_USBCAN_2E_U`] (21, 本机 2E-U 设备);
+///   后端按 [21, 4] 候选探测, 仍可回退。
+/// - `usbvci:21`   → 索引 0, 类型 21 (单段 = 显式指定类型)。
+/// - `usbvci:0:21` → 索引 0, 类型 21 (两段 = [索引, 类型])。
+///
+/// @param spec `--backend` 参数原文 (前缀必为 "usbvci")。
+/// @return (device_index, device_type); 段非数字 / 段数超限返回错误描述。
+fn parse_usbvci_backend(spec: &str) -> Result<(u32, u32), String> {
+    let segments: Vec<&str> = spec.split(':').collect();
+    if segments.len() > 3 {
+        return Err(format!(
+            "非法 usbvci 参数: {spec} (格式: usbvci[:index][:type])"
+        ));
+    }
+    let mut index = 0u32;
+    let mut device_type = can_usbvci::VCI_USBCAN_2E_U;
+    match segments.get(1) {
+        None => {}
+        Some(seg) if segments.len() == 2 => {
+            device_type = seg
+                .parse()
+                .map_err(|_| format!("非法设备类型: {seg} (--backend {spec})"))?;
+        }
+        Some(seg) => {
+            index = seg
+                .parse()
+                .map_err(|_| format!("非法设备索引: {seg} (--backend {spec})"))?;
+            let type_seg = segments[2];
+            device_type = type_seg
+                .parse()
+                .map_err(|_| format!("非法设备类型: {type_seg} (--backend {spec})"))?;
+        }
+    }
+    Ok((index, device_type))
 }
 
 /// 在后台线程启动 tokio runtime + axum Web 服务。

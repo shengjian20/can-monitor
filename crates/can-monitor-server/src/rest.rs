@@ -99,18 +99,29 @@ pub struct StartMonitorRequest {
 ///
 /// 格式:
 /// - `"socketcan"` / `"socketcan:can0"` → SocketCAN
-/// - `"usbvci"` / `"usbvci:0"` → USBVCI
+/// - `"usbvci"` / `"usbvci:0"` → USBVCI (设备索引 0)
+/// - `"usbvci:0:21"` → USBVCI (设备索引 0, 设备类型 21, 兼容旧格式
+///   `usbvci[:index][:type]`)
 /// - `"none"` → 无后端
 ///
+/// usbvci 的可选段 (索引 / 类型) 必须是十进制数字, 其余后端保持原样透传。
 /// 仅做格式校验 (总线后端在 CLI 启动时已固定), 不重新打开设备。
 fn parse_device_id(device_id: &str) -> Result<(String, String), String> {
-    let parts: Vec<&str> = device_id.splitn(2, ':').collect();
+    let parts: Vec<&str> = device_id.splitn(3, ':').collect();
     let backend = parts[0].to_lowercase();
     if !matches!(backend.as_str(), "socketcan" | "usbvci" | "none") {
         return Err(format!("未知设备类型: {backend}"));
     }
+    if backend == "usbvci" && parts.len() > 1 {
+        // 段 1 = 设备索引, 段 2 (可选) = 设备类型; 均须为十进制数字。
+        for seg in &parts[1..] {
+            if seg.is_empty() || !seg.bytes().all(|b| b.is_ascii_digit()) {
+                return Err(format!("非法 usbvci 参数: {device_id}"));
+            }
+        }
+    }
     let param = if parts.len() > 1 {
-        parts[1].to_string()
+        parts[1..].join(":")
     } else {
         match backend.as_str() {
             "socketcan" => "can0".to_string(),
@@ -239,4 +250,61 @@ pub async fn status(State(state): State<AppState>) -> Json<StatusJson> {
         error: state.bus.error_count(),
         dropped: state.bus.dropped_frames(),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// device_id 解析: usbvci 全形态 (裸 / 索引 / 索引+类型), 参数原样透出。
+    #[test]
+    fn parse_device_id_usbvci_variants() {
+        assert_eq!(
+            parse_device_id("usbvci"),
+            Ok(("usbvci".to_string(), "0".to_string()))
+        );
+        assert_eq!(
+            parse_device_id("usbvci:0"),
+            Ok(("usbvci".to_string(), "0".to_string()))
+        );
+        assert_eq!(
+            parse_device_id("usbvci:1"),
+            Ok(("usbvci".to_string(), "1".to_string()))
+        );
+        assert_eq!(
+            parse_device_id("usbvci:0:21"),
+            Ok(("usbvci".to_string(), "0:21".to_string()))
+        );
+        assert_eq!(
+            parse_device_id("usbvci:1:4"),
+            Ok(("usbvci".to_string(), "1:4".to_string()))
+        );
+    }
+
+    /// device_id 解析: socketcan / none 与既有默认值保持兼容。
+    #[test]
+    fn parse_device_id_socketcan_and_none() {
+        assert_eq!(
+            parse_device_id("socketcan"),
+            Ok(("socketcan".to_string(), "can0".to_string()))
+        );
+        assert_eq!(
+            parse_device_id("socketcan:can5"),
+            Ok(("socketcan".to_string(), "can5".to_string()))
+        );
+        assert_eq!(
+            parse_device_id("none"),
+            Ok(("none".to_string(), String::new()))
+        );
+    }
+
+    /// device_id 解析: 非法 usbvci 段 (非数字 / 空段 / 未知后端) 一律拒绝。
+    #[test]
+    fn parse_device_id_rejects_invalid() {
+        assert!(parse_device_id("ethernet").is_err());
+        assert!(parse_device_id("usbvci:abc").is_err());
+        assert!(parse_device_id("usbvci:0:x").is_err());
+        assert!(parse_device_id("usbvci:").is_err());
+        assert!(parse_device_id("usbvci:0:21:99").is_err());
+    }
 }

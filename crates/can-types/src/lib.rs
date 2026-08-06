@@ -393,11 +393,15 @@ pub enum BackendConfig {
     },
     /// USBCAN (VCI) 后端。
     ///
-    /// @param device_type  设备类型 (厂商定义的 USBCAN 设备类型码)。
+    /// @param device_type  设备类型 (厂商定义的 USBCAN 设备类型码; **0 = 未指定**,
+    ///                     打开时跳过该候选, 由后端按 [2E_U(21), USBCAN2(4)] 探测)。
     /// @param device_index 设备索引 (0 起, 区分同一类型的多台设备)。
     /// @param channel      通道号 (0 / 1)。
     UsbVci {
         /// USBCAN 设备类型码。
+        ///
+        /// 0 表示"未指定/自动": 后端 `open` 探测时跳过该候选, 直接按默认顺序
+        /// [2E_U(21), USBCAN2(4)] 尝试; 非 0 时作为探测首候选 (仍可回退)。
         device_type: u32,
         /// 设备索引 (0 起; 同类型多台设备时用于区分, 默认 0)。
         device_index: u32,
