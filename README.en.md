@@ -21,9 +21,9 @@ Two backends (Linux SocketCAN / ZLG USB-CAN), two protocol parsers (CANopen CiA 
 
 | Form | Stack | How to run |
 |------|-------|------------|
-| TUI | Rust + ratatui + crossterm | `cargo run -- --backend none` |
-| Web | Rust (axum REST/WS) + React SPA | `cargo run -- --backend none --web-write`, then open `http://127.0.0.1:8080` |
-| GUI | Tauri v2 (Web front end + Rust back end) | `cd src-tauri && cargo tauri dev` |
+| TUI | Rust + ratatui + crossterm | download the CLI/Web archive → `./can-monitor --backend none` |
+| Web | Rust (axum REST/WS) + React SPA | `./can-monitor --web-write --backend none`, then open `http://127.0.0.1:8080` |
+| GUI | Tauri v2 (Web front end + Rust back end) | install the GUI package (AppImage / deb / exe) and launch |
 
 > **Remote use (headless industrial PC)**: this host has no display. Use SSH to operate the three forms remotely — GUI via X11 forwarding, TUI over a plain SSH session, Web via SSH port forwarding (best headless option). See [docs/ssh-x11.md](docs/ssh-x11.md).
 
@@ -50,56 +50,62 @@ Two backends (Linux SocketCAN / ZLG USB-CAN), two protocol parsers (CANopen CiA 
 
 ## Quick start
 
-Prerequisites: Rust stable (1.88 or newer recommended). On Linux, the TUI and Web forms need no extra system packages; the GUI form needs webkit2gtk / dbus (see below).
+Download every release asset from the [GitHub Releases](https://github.com/shengjian20/can-monitor/releases) page. As of **v0.1.2**, each release ships both **GUI installers** and **CLI/Web binary archives**. A CLI/Web archive bundles `can-monitor`, the vendor library (`libcontrolcan.so` / `ControlCAN.dll`), the Web front end (`web/dist/`), and a README. Extract and run, no Rust toolchain required.
 
-### Form 1: TUI (terminal)
+### Option 1: GUI desktop app (recommended for everyday use)
+
+**Linux x86_64**: AppImage runs directly, no install:
 
 ```bash
-# No hardware, just look at the UI
-cargo run -- --backend none
+wget https://github.com/shengjian20/can-monitor/releases/download/v0.1.2/can-monitor_0.1.2_amd64.AppImage
+chmod +x can-monitor_0.1.2_amd64.AppImage
+./can-monitor_0.1.2_amd64.AppImage
+```
 
-# Against a SocketCAN interface (can0, or virtual vcan0)
-cargo run -- --backend socketcan --iface can0
+Or install a deb / rpm package (then launch from the system menu):
 
-# No hardware? Use vcan0 (needs can-utils to inject frames)
-bash scripts/vcan-setup.sh
-cansend vcan0 181#01020304          # other terminal: CANopen TPDO1
-cargo run -- --backend socketcan --iface vcan0
+```bash
+sudo apt install ./can-monitor_0.1.2_amd64.deb     # Debian / Ubuntu
+sudo dnf install ./can-monitor_0.1.2_amd64.rpm     # Fedora / RHEL
+```
+
+**Linux aarch64** (RK3588 / Raspberry Pi etc.): use `can-monitor_0.1.2_aarch64.AppImage` and `can-monitor_0.1.2_arm64.deb`, same steps.
+
+**Windows**: run `can-monitor_0.1.2_x64-setup.exe` (or the MSI) to install, then launch from the Start menu.
+
+GUI installers bundle the ControlCAN vendor library, so a USBCAN-II device works out of the box (USB permissions below).
+
+### Option 2: CLI + Web archive (terminal / headless PC / production line)
+
+**Linux x86_64**:
+
+```bash
+wget https://github.com/shengjian20/can-monitor/releases/download/v0.1.2/can-monitor-0.1.2-linux-x86_64.tar.gz
+tar xzf can-monitor-0.1.2-linux-x86_64.tar.gz
+cd can-monitor-0.1.2-linux-x86_64
+
+./can-monitor --backend none                      # no hardware, just look at the TUI
+./can-monitor --backend socketcan --iface can0    # against a SocketCAN interface (or virtual vcan0)
+./can-monitor --backend usbvci                    # ZLG USB-CAN (vendor lib bundled)
 ```
 
 Inside the TUI, press `SPACE` to start monitoring, `q` to quit. Keymap below.
 
-### Form 2: Web (browser)
+**Web UI** (best for headless setups):
 
 ```bash
-# 1. Build the front end once (the backend serves web/dist)
-cd web && npm install && npm run build && cd ..
-
-# 2. Start the backend (REST + WebSocket + static page)
-cargo run -- --backend none --web-write
+./can-monitor --web-write --backend usbvci --web-port 127.0.0.1:8088
+# local: open http://127.0.0.1:8088 in your browser
+# remote (second terminal): ssh -L 8088:127.0.0.1:8088 user@host, then open http://127.0.0.1:8088 locally
 ```
 
-Open <http://127.0.0.1:8080> in a browser. `--web-write` is what allows sending frames from the UI; without it the web server does not start at all (the CLI only launches the service in write mode).
+`--web-write` is what enables sending frames from the UI; the default listen address is `127.0.0.1:8080`, loopback only (security-locked). **Note**: the Web static files are resolved relative to `web/dist` under the current working directory, so run from inside the extracted folder.
 
-Front-end development mode (hot reload):
+**Linux aarch64**: use `can-monitor-0.1.2-linux-aarch64.tar.gz`, same steps. **Windows**: download `can-monitor-0.1.2-windows-x86_64.zip`, extract, run `can-monitor.exe` (`ControlCAN.dll` included).
 
-```bash
-# Terminal 1: backend (REST/WS data source, listening on 8080)
-cargo run -- --backend none --web-write
-# Terminal 2: Vite dev server (page on 1420, data still on 8080)
-cd web && npm run dev
-# Open http://localhost:1420
-```
+**USB-CAN permissions (Linux)**: the running user needs read/write access to `/dev/bus/usb/*/*`. The repo ships a udev rule, [`scripts/99-usbcan.rules`](scripts/99-usbcan.rules): copy it to `/etc/udev/rules.d/`, then run `sudo udevadm control --reload && sudo udevadm trigger` to use the device without root. Remote use on a headless industrial PC (SSH + X11 forwarding / port forwarding) is covered in [docs/ssh-x11.md](docs/ssh-x11.md).
 
-### Form 3: GUI (desktop)
-
-```bash
-cd src-tauri && cargo tauri dev
-```
-
-On Linux this needs system packages: `libwebkit2gtk-4.1-dev`, `libayatana-appindicator3-dev`, `librsvg2-dev` (and `libdbus-1-dev`). The bundled devcontainer already has the full toolchain. The GUI shares the same React code as the Web form (`web/`) and talks to Rust over Tauri IPC (invoke + Channel), with commands mirroring the Web API one to one.
-
-### Form 4: Docker (ghcr.io)
+### Option 3: Docker (ghcr.io)
 
 Images are published to the GitHub Container Registry at `ghcr.io/shengjian20/can-monitor`, built automatically by `.github/workflows/docker.yml` on `v*` tags and `main` pushes. The image bundles the `can-monitor` binary (TUI + Web), the Web frontend assets, and `libcontrolcan.so` (placed next to the binary plus a `CAN_USBVCI_LIB` env fallback — USB-CAN works **out of the box**).
 
@@ -127,6 +133,18 @@ docker run --rm -dt --network host ghcr.io/shengjian20/can-monitor:latest --back
 
 Build the image locally (multi-stage: node builds the frontend → rust builds the binary → `debian:bookworm-slim` runtime): `docker build -t can-monitor:dev .`
 
+### Option 4: Build from source (developers)
+
+For everyday use, download the packages above instead of building. To modify code, run tests, or cross-compile, see [CONTRIBUTING.md](CONTRIBUTING.md) (environment, branch model, quality gates). Core commands:
+
+```bash
+cargo build --release                                    # build can-monitor (TUI + Web in one binary)
+cd web && npm install && npm run build && cd ..          # build the Web front end (Web form only)
+cargo run -- --backend none                              # dev debugging
+```
+
+The GUI (Tauri) form needs webkit2gtk / dbus system packages; see [CONTRIBUTING.md](CONTRIBUTING.md).
+
 ## Device support
 
 | Backend | Platform | Interface / device | Auto-discovery | CANFD | Notes |
@@ -138,7 +156,7 @@ Build the image locally (multi-stage: node builds the frontend → rust builds t
 - **CANFD note**: USB-CAN hardware does not support CANFD; FD frames return `Unsupported`. Only the SocketCAN backend enables FD via `--fd`
 - **Vendor library**: the ControlCAN library used by `can-usbvci` comes from the vendor-bundled `CAN分析仪资料20250624_Linux` directory (Linux package V1.45) and is committed under `third_party/controlcan/{aarch64,x86_64,win64}/` (including the Windows `ControlCAN.dll`), and is bundled into the Tauri installer — **out of the box**: users can connect a USBCAN-II device right after installing, without hunting for vendor libraries. Origin and distribution notes live in [docs/VENDOR.md](docs/VENDOR.md); re-copy with `bash scripts/fetch-vendor.sh`
 - **Windows `usbcan64.dll`**: provided by the vendor driver installer (auto-installed into System32 when the driver is installed); the SDK and this repo do not ship it separately
-- **USB permissions**: the running user needs read/write access to `/dev/bus/usb/*/*` (set up your own udev rules or run as root). The repo ships no udev rules
+- **USB permissions**: the running user needs read/write access to `/dev/bus/usb/*/*`. The repo ships a udev rule, [`scripts/99-usbcan.rules`](scripts/99-usbcan.rules): copy it to `/etc/udev/rules.d/` and run `sudo udevadm control --reload && sudo udevadm trigger` to work without root; alternatively run as root
 - Adding a new device (third-party adapter / test stub): see the [docs/devices.md](docs/devices.md) extension guide
 
 ## Cross-compilation (aarch64 / RK3588)

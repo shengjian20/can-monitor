@@ -19,11 +19,11 @@ English: [README.en.md](README.en.md)
 
 **三形态**
 
-| 形态 | 技术栈 | 启动方式 |
+| 形态 | 技术栈 | 使用方式 |
 |------|--------|----------|
-| TUI | Rust + ratatui + crossterm | `cargo run -- --backend none` |
-| Web | Rust (axum REST/WS) + React SPA | `cargo run -- --backend none --web-write` 后访问 `http://127.0.0.1:8080` |
-| GUI | Tauri v2 (Web 前端 + Rust 后端) | `cd src-tauri && cargo tauri dev` |
+| TUI | Rust + ratatui + crossterm | 下载 CLI/Web 包 → `./can-monitor --backend none` |
+| Web | Rust (axum REST/WS) + React SPA | `./can-monitor --web-write --backend none` 后访问 `http://127.0.0.1:8080` |
+| GUI | Tauri v2 (Web 前端 + Rust 后端) | 安装 GUI 安装包 (AppImage / deb / exe) 后启动 |
 
 > **远程使用 (无屏幕工控机)**: 本机无屏幕, 通过 SSH 远程操作三种形态 — GUI 走 X11 转发, TUI 普通 SSH 即用, Web 走端口转发 (无头最佳)。见 [docs/ssh-x11.md](docs/ssh-x11.md)。
 
@@ -50,56 +50,62 @@ English: [README.en.md](README.en.md)
 
 ## 快速开始
 
-前置要求: Rust (stable, 建议 ≥ 1.88)。Linux 上构建 TUI/Web 形态无需额外系统依赖;GUI 形态需要 webkit2gtk / dbus (见下文)。
+所有发布资产从 [GitHub Releases](https://github.com/shengjian20/can-monitor/releases) 下载。自 **v0.1.2** 起, 每次 release 同时发布 **GUI 安装包** 与 **CLI/Web 二进制包**。CLI/Web 包为 **CLI + TUI + Web 一体**: 内含 `can-monitor` 可执行文件、厂商库 (`libcontrolcan.so` / `ControlCAN.dll`)、Web 前端 (`web/dist/`) 与 README, 解压即用, 无需安装 Rust。
 
-### 形态一: TUI (终端)
+### 方式一: GUI 桌面应用 (日常使用推荐)
+
+**Linux x86_64**: AppImage 免安装直接运行:
 
 ```bash
-# 无硬件, 直接看界面
-cargo run -- --backend none
+wget https://github.com/shengjian20/can-monitor/releases/download/v0.1.2/can-monitor_0.1.2_amd64.AppImage
+chmod +x can-monitor_0.1.2_amd64.AppImage
+./can-monitor_0.1.2_amd64.AppImage
+```
 
-# 接 SocketCAN 接口 (如 can0 或虚拟 vcan0)
-cargo run -- --backend socketcan --iface can0
+或安装 deb / rpm 包 (安装后从系统菜单启动):
 
-# 无硬件时可用 vcan0 联调 (需要 can-utils 灌帧)
-bash scripts/vcan-setup.sh
-cansend vcan0 181#01020304          # 另一个终端: CANopen TPDO1
-cargo run -- --backend socketcan --iface vcan0
+```bash
+sudo apt install ./can-monitor_0.1.2_amd64.deb     # Debian / Ubuntu
+sudo dnf install ./can-monitor_0.1.2_amd64.rpm     # Fedora / RHEL
+```
+
+**Linux aarch64** (RK3588 / 树莓派等): `can-monitor_0.1.2_aarch64.AppImage` 与 `can-monitor_0.1.2_arm64.deb`, 用法同上。
+
+**Windows**: 运行 `can-monitor_0.1.2_x64-setup.exe` (或 MSI 包) 安装, 从开始菜单启动。
+
+GUI 安装包已内置 ControlCAN 厂商库, 插入 USBCAN-II 即可开箱即用 (USB 权限见下)。
+
+### 方式二: CLI + Web 一体包 (终端 / 无头工控机 / 产线)
+
+**Linux x86_64**:
+
+```bash
+wget https://github.com/shengjian20/can-monitor/releases/download/v0.1.2/can-monitor-0.1.2-linux-x86_64.tar.gz
+tar xzf can-monitor-0.1.2-linux-x86_64.tar.gz
+cd can-monitor-0.1.2-linux-x86_64
+
+./can-monitor --backend none                      # 无硬件, 直接看 TUI
+./can-monitor --backend socketcan --iface can0    # 接 SocketCAN 接口 (或虚拟 vcan0)
+./can-monitor --backend usbvci                    # 周立功 USB-CAN (厂商库已随包)
 ```
 
 TUI 内按 `SPACE` 开始监控,`q` 退出。快捷键速查见下方「快捷键」。
 
-### 形态二: Web (浏览器)
+**Web 界面** (无头场景最佳):
 
 ```bash
-# 1. 构建前端 (只需一次, 产物 web/dist 由后端托管)
-cd web && npm install && npm run build && cd ..
-
-# 2. 启动后端 (REST + WebSocket + 静态页面)
-cargo run -- --backend none --web-write
+./can-monitor --web-write --backend usbvci --web-port 127.0.0.1:8088
+# 本机: 浏览器打开 http://127.0.0.1:8088
+# 远程 (另开终端): ssh -L 8088:127.0.0.1:8088 user@host, 再在本机浏览器打开 http://127.0.0.1:8088
 ```
 
-浏览器打开 <http://127.0.0.1:8080>。`--web-write` 才允许通过界面发送帧;去掉该标志后 Web 服务不会启动 (CLI 仅在写模式下拉起服务)。
+`--web-write` 才允许通过界面发送帧; 默认监听 `127.0.0.1:8080`, 仅限本机回环 (安全锁定)。**注意**: Web 静态文件按当前工作目录相对 `web/dist` 解析, 请在解压目录内运行。
 
-前端开发模式 (热更新):
+**Linux aarch64**: 换用 `can-monitor-0.1.2-linux-aarch64.tar.gz`, 步骤相同。**Windows**: 下载 `can-monitor-0.1.2-windows-x86_64.zip` 解压, 运行 `can-monitor.exe` (已内置 `ControlCAN.dll`)。
 
-```bash
-# 终端 1: 后端 (REST/WS 数据源, 监听 8080)
-cargo run -- --backend none --web-write
-# 终端 2: Vite 开发服务器 (页面在 1420, 数据仍走 8080)
-cd web && npm run dev
-# 浏览器打开 http://localhost:1420
-```
+**USB-CAN 设备权限 (Linux)**: 运行用户需对 `/dev/bus/usb/*/*` 有读写权限。仓库自带 udev 规则 [`scripts/99-usbcan.rules`](scripts/99-usbcan.rules), 复制到 `/etc/udev/rules.d/` 后执行 `sudo udevadm control --reload && sudo udevadm trigger`, 即可免 root 使用。无屏幕工控机的远程操作 (SSH + X11 转发 / 端口转发) 见 [docs/ssh-x11.md](docs/ssh-x11.md)。
 
-### 形态三: GUI (桌面)
-
-```bash
-cd src-tauri && cargo tauri dev
-```
-
-Linux 需要系统依赖: `libwebkit2gtk-4.1-dev`、`libayatana-appindicator3-dev`、`librsvg2-dev` (及 `libdbus-1-dev`)。也可用仓库自带 devcontainer (已装好全部工具链)。GUI 前端与 Web 形态共用同一 React 代码 (`web/`),运行时经 Tauri IPC (invoke + Channel) 通信,接口与 Web 形态一一对应。
-
-### 形态四: Docker 容器 (ghcr.io)
+### 方式三: Docker 容器 (ghcr.io)
 
 镜像发布在 GitHub Container Registry: `ghcr.io/shengjian20/can-monitor`,由 `.github/workflows/docker.yml` 在 tag `v*` / main 推送时自动构建。镜像内含 can-monitor 二进制 (TUI + Web)、Web 前端静态资源,以及 `libcontrolcan.so` (与二进制同目录 + `CAN_USBVCI_LIB` 双保险,USB-CAN **开箱即用**)。
 
@@ -127,6 +133,18 @@ docker run --rm -dt --network host ghcr.io/shengjian20/can-monitor:latest --back
 
 本地构建镜像 (多阶段: node 构建前端 → rust 构建二进制 → debian:bookworm-slim 运行镜像): `docker build -t can-monitor:dev .`
 
+### 方式四: 从源码构建 (开发者)
+
+一般使用直接下载上面的包即可, 无需自己构建。修改代码 / 跑测试 / 交叉编译请参考 [CONTRIBUTING.md](CONTRIBUTING.md) (环境、分支模型、质量门禁)。核心命令:
+
+```bash
+cargo build --release                                    # 构建 can-monitor (TUI + Web 一体)
+cd web && npm install && npm run build && cd ..          # 构建 Web 前端 (仅 Web 形态需要)
+cargo run -- --backend none                              # 开发调试
+```
+
+GUI (Tauri) 形态开发需要 webkit2gtk / dbus 系统依赖, 见 [CONTRIBUTING.md](CONTRIBUTING.md)。
+
 ## 设备支持
 
 | 后端 | 平台 | 接口/设备 | 自动发现 | CANFD | 备注 |
@@ -138,7 +156,7 @@ docker run --rm -dt --network host ghcr.io/shengjian20/can-monitor:latest --back
 - **CANFD 说明**: USB-CAN 硬件不支持 CANFD,FD 帧返回 `Unsupported`;仅 SocketCAN 后端经 `--fd` 启用
 - **供应商库**: `can-usbvci` 需要的 ControlCAN 库来自供应商随附的 `CAN分析仪资料20250624_Linux` 目录 (Linux 资料包 V1.45),已按 `third_party/controlcan/{aarch64,x86_64,win64}/` 对称布局随源码提交 (含 Windows `ControlCAN.dll`),并已打进 Tauri 发行包 → **开箱即用**, 用户拿到安装包/可执行文件即可连接 USBCAN-II, 无需自行寻找厂商库。来源与分发说明见 [docs/VENDOR.md](docs/VENDOR.md);重新拷贝可执行 `bash scripts/fetch-vendor.sh`
 - **Windows usbcan64.dll**: 该 DLL 由厂商驱动安装器写入 System32 (驱动安装后自动就绪), SDK 与仓库均不单独携带
-- **USB 权限**: 运行用户需对 `/dev/bus/usb/*/*` 有读写权限 (自行配置 udev 规则或以 root 运行);仓库未内置 udev 规则文件
+- **USB 权限**: 运行用户需对 `/dev/bus/usb/*/*` 有读写权限。仓库提供 udev 规则 [`scripts/99-usbcan.rules`](scripts/99-usbcan.rules), 复制到 `/etc/udev/rules.d/` 后 `sudo udevadm control --reload && sudo udevadm trigger` 即可免 root; 或以 root 运行
 - 扩展新设备 (第三方适配器 / 测试桩): 见 [docs/devices.md](docs/devices.md) 设备扩展指南
 
 ## 交叉编译 (aarch64 / RK3588)
