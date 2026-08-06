@@ -20,3 +20,7 @@ can-monitor-core = { path = "../crates/can-monitor-core" }
 can-socketcan = { path = "../crates/can-socketcan" }
 can-usbvci = { path = "../crates/can-usbvci" }
 can-devices = { path = "../crates/can-devices" }
+
+# 独立 workspace: 不隶属于根 workspace (根 workspace 的 profile/成员会干扰 tauri-cli 的 cargo metadata);
+# 通过 path 依赖引用 ../crates/* (它们属于根 workspace, 作为外部包构建无冲突)。
+[workspace]
