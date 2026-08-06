@@ -6,6 +6,10 @@
 #     cargo-zigbuild (zig cc backend) + gcc-aarch64-linux-gnu / libc6-dev-arm64-cross
 #   - can-utils (cansend / candump / canplayer) for SocketCAN + vcan testing
 #   - libusb-dev (legacy 0.1 API, provides usb.h) for libcontrolcan .a link mode
+#   - Tauri v2 Linux system deps (libwebkit2gtk-4.1 / appindicator / rsvg /
+#     xdg-utils) for src-tauri/ GUI development — same set as release.yml
+#   - Node 22 is NOT baked here; the devcontainer.json "node" feature provides
+#     it for web/ (keeps this image toolchain-only, matching devcontainers ec)
 FROM mcr.microsoft.com/devcontainers/rust:1-bookworm
 
 # Zig backend used by cargo-zigbuild (not packaged in Debian bookworm).
@@ -23,6 +27,10 @@ RUN apt-get update && export DEBIAN_FRONTEND=noninteractive \
         iproute2 \
         ca-certificates \
         curl \
+        libwebkit2gtk-4.1-dev \
+        libayatana-appindicator3-dev \
+        librsvg2-dev \
+        xdg-utils \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
@@ -60,16 +68,18 @@ RUN set -eux; \
 # --- cargo-zigbuild ---------------------------------------------------------
 RUN cargo install cargo-zigbuild --locked
 
-# --- Rust toolchain: ensure stable >= 1.88, add aarch64 target --------------
+# --- Rust toolchain: ensure stable >= 1.88, add cross targets ----------------
 # Prebuilt libcontrolcan .a is glibc-linked -> glibc target (aarch64-unknown-linux-gnu),
 # NOT musl.
+# aarch64-apple-darwin / x86_64-pc-windows-msvc: v2 cross-platform gating re-check
+# (cargo check only needs std, no linker required).
 # static.rust-lang.org is ~300B/s from CN egress -> use rsproxy.cn mirror (tested
 # reachable). Cargo/crates.io is unaffected.
 ENV RUSTUP_DIST_SERVER=https://rsproxy.cn \
     RUSTUP_UPDATE_ROOT=https://rsproxy.cn/rustup
 RUN rustup update stable \
     && rustup default stable \
-    && rustup target add aarch64-unknown-linux-gnu
+    && rustup target add aarch64-unknown-linux-gnu aarch64-apple-darwin x86_64-pc-windows-msvc
 
 # --- Verification (fails the build if anything is missing) ------------------
 RUN rustc --version \
@@ -77,7 +87,8 @@ RUN rustc --version \
     && zig version \
     && rustup target list --installed \
     && which cansend candump canplayer \
-    && which aarch64-linux-gnu-gcc
+    && which aarch64-linux-gnu-gcc \
+    && pkg-config --exists webkit2gtk-4.1 && echo "webkit2gtk-4.1: OK"
 
 # Cross-compile smoke test to confirm toolchain wiring (no project sources are
 # added to the image; this is a throwaway crate in /tmp).

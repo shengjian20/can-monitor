@@ -8,20 +8,20 @@
 		"--cap-add=NET_ADMIN",
 		"--device=/dev/bus/usb"
 	],
-	"mounts": [
-		{
-			"source": "${localWorkspaceFolder}/third_party",
-			"target": "/workspaces/can_monitor/third_party",
-			"type": "bind"
+	"features": {
+		"ghcr.io/devcontainers/features/node:1": {
+			"version": "22"
 		}
-	],
+	},
 	"customizations": {
 		"vscode": {
 			"extensions": [
 				"rust-lang.rust-analyzer",
 				"tamasfe.even-better-toml",
 				"vadimcn.vscode-lldb",
-				"serayuzgur.crates"
+				"serayuzgur.crates",
+				"dbaeumer.vscode-eslint",
+				"bradlc.vscode-tailwindcss"
 			]
 		}
 	},
