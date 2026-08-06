@@ -7,3 +7,6 @@ __pycache__/
 
 # 内部工作区 (plans/notepads/e2e/evidence/run-continuation 等), 公开仓库时不提交
 .omo/
+
+# 供应商 SDK 源码目录 (所需库已收编到 third_party/controlcan/, 本目录不提交)
+CAN分析仪资料20250624_Linux/

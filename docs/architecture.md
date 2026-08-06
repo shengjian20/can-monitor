@@ -172,11 +172,13 @@ Cargo workspace 共 9 个成员 + `src-tauri` 独立目录 (`resolver = "2"`,`[p
 third_party/controlcan/
   aarch64/    libcontrolcan.{a,so}   (ARM 平台/64bit)
   x86_64/     libcontrolcan.{a,so}   (x86 平台/64bit linux)
+  win64/      ControlCAN.dll         (Windows x64, PE32+)
   controlcan.h                       (架构无关头文件)
 ```
 
-- v2 的默认链接模式是**动态加载**: `can-usbvci` 用 libloading 在运行时 `dlopen("libcontrolcan.so")`,解析 13 个 `VCI_*` 符号 (`extern "system"` ABI)。二进制 `readelf -d` 无 VCI 符号引用,部署时只需 .so 可达
-- 加载优先级: `CAN_USBVCI_LIB` 环境变量 → exe 同目录 (deploy 场景) → 裸文件名交 OS 搜索 (`DT_RUNPATH` 会被 dlopen 查询,因此仓库内构建无需 `LD_LIBRARY_PATH`)
+- v2 的默认链接模式是**动态加载**: `can-usbvci` 用 libloading 在运行时 `dlopen("libcontrolcan.so")` / `LoadLibrary("ControlCAN.dll")`,解析 13 个 `VCI_*` 符号 (`extern "system"` ABI)。二进制 `readelf -d` 无 VCI 符号引用,部署时只需库可达
+- 加载优先级 (`resolve_library`): `CAN_USBVCI_LIB` 环境变量 → exe 同目录 (`current_exe().parent()`, 显式路径, deploy 场景) → 裸文件名交 OS 搜索 — Linux: `DT_RUNPATH` / `LD_LIBRARY_PATH` / ldconfig (仓库内构建无需 `LD_LIBRARY_PATH`);Windows: LoadLibrary 依次查 exe 目录 / System32 / PATH
+- Tauri 发行包: `bundle.resources` 内置三平台厂商库;Windows 上 `$RESOURCE` == exe 所在目录,`ControlCAN.dll` 落位 exe 根 → exe-dir-first 命中, 开箱即用。Windows `usbcan64.dll` 由厂商驱动安装器写入 System32, 无需随包携带
 - 静态模式 (环境变量 `CAN_USBVCI_LINK_MODE=static`): 链接 `libcontrolcan.a` + 旧版 `libusb` (0.1 API),需要 `/usr/include/usb.h`
 - `mock` feature: 不链接真实库,`MockVciOps` 桩替换 FFI 调用,无硬件/无库主机可测
 - 来源: 供应商随附 `CAN分析仪资料20250624_Linux` (Linux 资料包 V1.45),`scripts/fetch-vendor.sh` 拷贝入库。分发说明见 docs/VENDOR.md

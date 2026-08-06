@@ -106,7 +106,8 @@ Linux 需要系统依赖: `libwebkit2gtk-4.1-dev`、`libayatana-appindicator3-de
 | 无设备 | 任意 | — | — | — | `--backend none` 调试模式,不接总线 |
 
 - **CANFD 说明**: USB-CAN 硬件不支持 CANFD,FD 帧返回 `Unsupported`;仅 SocketCAN 后端经 `--fd` 启用
-- **供应商库**: `can-usbvci` 需要的 ControlCAN 库来自供应商随附的 `CAN分析仪资料20250624_Linux` 目录 (Linux 资料包 V1.45),已按 `third_party/controlcan/{aarch64,x86_64}/` 对称布局随源码提交。来源与分发说明见 [docs/VENDOR.md](docs/VENDOR.md);重新拷贝可执行 `bash scripts/fetch-vendor.sh`
+- **供应商库**: `can-usbvci` 需要的 ControlCAN 库来自供应商随附的 `CAN分析仪资料20250624_Linux` 目录 (Linux 资料包 V1.45),已按 `third_party/controlcan/{aarch64,x86_64,win64}/` 对称布局随源码提交 (含 Windows `ControlCAN.dll`),并已打进 Tauri 发行包 → **开箱即用**, 用户拿到安装包/可执行文件即可连接 USBCAN-II, 无需自行寻找厂商库。来源与分发说明见 [docs/VENDOR.md](docs/VENDOR.md);重新拷贝可执行 `bash scripts/fetch-vendor.sh`
+- **Windows usbcan64.dll**: 该 DLL 由厂商驱动安装器写入 System32 (驱动安装后自动就绪), SDK 与仓库均不单独携带
 - **USB 权限**: 运行用户需对 `/dev/bus/usb/*/*` 有读写权限 (自行配置 udev 规则或以 root 运行);仓库未内置 udev 规则文件
 - 扩展新设备 (第三方适配器 / 测试桩): 见 [docs/devices.md](docs/devices.md) 设备扩展指南
 
@@ -188,7 +189,7 @@ crates/
 src-tauri/              Tauri v2 桌面 GUI (7 个 IPC 命令 + Channel 帧流)
 web/                    React SPA (Vite + TS, Tauri/浏览器双模式自动切换)
 scripts/                构建/部署/测试脚本
-third_party/controlcan/ 供应商库 (aarch64/ + x86_64/,随源码提交)
+third_party/controlcan/ 供应商库 (aarch64/ + x86_64/ + win64/,随源码提交)
 docs/                   架构 / 设备扩展 / Web API / 供应商说明
 ```
 

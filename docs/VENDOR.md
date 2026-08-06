@@ -8,12 +8,26 @@
 - **供应商**: 周立功 (ZLG) / 广州致远电子 — USB-CAN 系列设备 VCI 驱动与 SDK
 - **来源包**: `CAN分析仪资料20250624_Linux/` (仓库根目录下随附的厂商资料压缩包, 本地工作目录)
 - **版本**: Linux 资料包 **V1.45** (位于 `CAN分析仪资料20250624_Linux/CAN分析仪资料20250618_Linux/Linux资料包V1.45/`)
-- **仓库内使用方式**: `scripts/fetch-vendor.sh` 从 SDK `Linux资料包V1.45/二次开发库文件` 拷贝必要文件到 `third_party/controlcan/` (aarch64/ + x86_64/ 对称布局), `third_party/` 跟随源码提交发布
+- **仓库内使用方式**: `scripts/fetch-vendor.sh` 从 SDK `Linux资料包V1.45/二次开发库文件` 拷贝必要文件到 `third_party/controlcan/` (aarch64/ + x86_64/ + win64/ 对称布局), `third_party/` 跟随源码提交发布
+
+### 仓库内布局
+
+```
+third_party/controlcan/
+  aarch64/    libcontrolcan.{a,so}   (ARM 平台/64bit linux)
+  x86_64/     libcontrolcan.{a,so}   (x86 平台/64bit linux)
+  win64/      ControlCAN.dll         (Windows x64, PE32+)
+  controlcan.h                       (架构无关头文件)
+```
+
+- Windows `ControlCAN.dll` 来源: SDK `二次开发库文件/x64(64bit)/ControlCAN.dll` (sha256 `6d151f92217983c39a6690ded76b41f86ebad7570bcc27fc9d13f7141425b1e3`), 随源码提交并打入 Tauri 发行包资源 (落位 `$RESOURCE/ControlCAN.dll` == exe 所在目录 → 运行时 exe-dir-first 加载命中, 开箱即用)
+- **Windows `usbcan64.dll`**: 不在 SDK 归档内 — `硬件驱动程序(手动安装).rar` 只含驱动安装文件 (`*.inf` / `*.sys` / WinUSB·WDF 联合安装器), `usbcan64.dll` 由驱动安装器写入 `System32`。**无需随发行包携带**: 用户安装厂商驱动后自动就绪 (ControlCAN.dll 调用链不需要用户手动放置该 DLL)
+- macOS: 无需厂商库 (mock 逃生舱, 无 macOS 供应商库)
 
 ### 分发策略 (Task 23 定稿)
 
-- [x] **不提交** `CAN分析仪资料20250624_Linux/` (334MB, 212 个文件, 含 >50MB 的 Windows 安装包) 到公开仓库 (用户决策, 已在 .gitignore 之外保持 untracked)
-- [x] `third_party/controlcan/` 中厂商二进制 `libcontrolcan.so` / `.a` **随源码提交** (用户决策);再分发许可以 ZLG SDK 最终用户许可协议为准, 使用方需自行确认
+- [x] **不提交** `CAN分析仪资料20250624_Linux/` (334MB, 212 个文件, 含 >50MB 的 Windows 安装包) 到公开仓库 (用户决策, 已在 .gitignore 忽略)
+- [x] `third_party/controlcan/` 中厂商二进制 `libcontrolcan.so` / `.a` / `ControlCAN.dll` **随源码提交** (用户决策);再分发许可以 ZLG SDK 最终用户许可协议为准, 使用方需自行确认
 - [x] 二进制产物无 SONAME (`libcontrolcan.so`) — 交叉编译脚本 `build-cross.sh` 用 `patchelf --set-soname` 修复, 见 README「交叉编译」
 
 ### 大文件清单 (>50MB, 来源包内)

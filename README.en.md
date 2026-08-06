@@ -106,7 +106,8 @@ On Linux this needs system packages: `libwebkit2gtk-4.1-dev`, `libayatana-appind
 | None | Any | — | — | — | `--backend none` debug mode, no bus attached |
 
 - **CANFD note**: USB-CAN hardware does not support CANFD; FD frames return `Unsupported`. Only the SocketCAN backend enables FD via `--fd`
-- **Vendor library**: the ControlCAN library used by `can-usbvci` comes from the vendor-bundled `CAN分析仪资料20250624_Linux` directory (Linux package V1.45) and is committed under `third_party/controlcan/{aarch64,x86_64}/`. Origin and distribution notes live in [docs/VENDOR.md](docs/VENDOR.md); re-copy with `bash scripts/fetch-vendor.sh`
+- **Vendor library**: the ControlCAN library used by `can-usbvci` comes from the vendor-bundled `CAN分析仪资料20250624_Linux` directory (Linux package V1.45) and is committed under `third_party/controlcan/{aarch64,x86_64,win64}/` (including the Windows `ControlCAN.dll`), and is bundled into the Tauri installer — **out of the box**: users can connect a USBCAN-II device right after installing, without hunting for vendor libraries. Origin and distribution notes live in [docs/VENDOR.md](docs/VENDOR.md); re-copy with `bash scripts/fetch-vendor.sh`
+- **Windows `usbcan64.dll`**: provided by the vendor driver installer (auto-installed into System32 when the driver is installed); the SDK and this repo do not ship it separately
 - **USB permissions**: the running user needs read/write access to `/dev/bus/usb/*/*` (set up your own udev rules or run as root). The repo ships no udev rules
 - Adding a new device (third-party adapter / test stub): see the [docs/devices.md](docs/devices.md) extension guide
 
@@ -188,7 +189,7 @@ crates/
 src-tauri/              Tauri v2 desktop GUI (7 IPC commands + Channel frame stream)
 web/                    React SPA (Vite + TS, Tauri/browser mode auto-detection)
 scripts/                build / deploy / test scripts
-third_party/controlcan/ vendor library (aarch64/ + x86_64/, committed)
+third_party/controlcan/ vendor library (aarch64/ + x86_64/ + win64/, committed)
 docs/                   architecture / devices / web API / vendor notes
 ```
 
