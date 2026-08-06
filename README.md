@@ -145,6 +145,27 @@ cargo run -- --backend none                              # 开发调试
 
 GUI (Tauri) 形态开发需要 webkit2gtk / dbus 系统依赖, 见 [CONTRIBUTING.md](CONTRIBUTING.md)。
 
+## 系统要求与支持矩阵 (Linux arm64)
+
+arm64 (aarch64) 的 CLI/Web 发布为**通用单包** `can-monitor-0.1.4-linux-aarch64.tar.gz` (glibc 2.17 构建), 一个包同时兼容 Ubuntu 16.04 与 24.04:
+
+| 系统 | glibc | CLI/Web 包 | GUI |
+|------|-------|-----------|-----|
+| Ubuntu 16.04 | 2.23 | ✅ 通用单包 (glibc 2.17 构建) | **Web 形态** — 浏览器访问 http://localhost:8088 |
+| Ubuntu 24.04 | 2.39 | ✅ 同包 | **原生 Tauri GUI** (webkit2gtk-4.1) |
+
+**16.04 的 GUI 为 Web 形态**: Tauri v2 原生 GUI 需要 webkit2gtk-4.1 (glibc ≥ 2.34), 16.04 无法运行原生 GUI, 改用包内自带的 Web 界面, 功能与原生 GUI 相同 (16.04 安装任意浏览器即可):
+
+```bash
+tar xzf can-monitor-0.1.4-linux-aarch64.tar.gz
+cd can-monitor-0.1.4-linux-aarch64
+./can-monitor --web-write --backend usbvci --web-port 127.0.0.1:8088
+# 浏览器打开 http://127.0.0.1:8088
+# 远程场景 (无屏幕工控机): ssh -L 8088:127.0.0.1:8088 user@host, 见 docs/ssh-x11.md
+```
+
+**24.04 的 GUI 为原生 Tauri**: 安装 `can-monitor_0.1.4_aarch64.AppImage` / `can-monitor_0.1.4_arm64.deb` 即可。
+
 ## 设备支持
 
 | 后端 | 平台 | 接口/设备 | 自动发现 | CANFD | 备注 |

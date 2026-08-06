@@ -39,10 +39,30 @@ can-monitor 的版本管理遵循 [语义化版本](https://semver.org/lang/zh-C
 | 平台 | 产物 | 内容 |
 |------|------|------|
 | Linux x86_64 | `can-monitor-<ver>-linux-x86_64.tar.gz` | `can-monitor` 二进制 + `libcontrolcan.so` (x86_64) + `web/dist/` + `README.md` |
-| Linux aarch64 | `can-monitor-<ver>-linux-aarch64.tar.gz` | `can-monitor` 二进制 + `libcontrolcan.so` (aarch64) + `web/dist/` + `README.md` |
+| Linux aarch64 | `can-monitor-<ver>-linux-aarch64.tar.gz` | `can-monitor` 二进制 + `libcontrolcan.so` (aarch64) + `web/dist/` + `README.md` (glibc 2.17 构建, 兼容 Ubuntu 16.04 / 24.04) |
 | Windows x86_64 | `can-monitor-<ver>-windows-x86_64.zip` | `can-monitor.exe` + `ControlCAN.dll` (win64) + `web/dist/` + `README.md` |
 
 版本号取自 tag (`v0.1.2` → 产物名 `0.1.2`)。CLI/Web 资产为 **CLI+TUI+Web 一体二进制**: 解压后直接运行 `./can-monitor --help`; `--backend none --web-write` 起 Web 界面 (http://127.0.0.1:8080); `--backend usbvci` 用 USB-CAN (厂商库已放二进制同目录, 开箱即用)。**注意**: Web 静态文件按当前工作目录相对 `web/dist` 解析, 请在解压目录内运行。
+
+### 支持矩阵 (Linux arm64)
+
+arm64 (aarch64) 发布为**通用单包**: CLI/Web 资产以 glibc 2.17 为目标构建, 一个包同时兼容 Ubuntu 16.04 (glibc 2.23) 与 Ubuntu 24.04 (glibc 2.39):
+
+| 系统 | glibc | CLI/Web 包 | GUI |
+|------|-------|-----------|-----|
+| Ubuntu 16.04 | 2.23 | ✅ `can-monitor-<ver>-linux-aarch64.tar.gz` | **Web 形态** (包内 `web/dist`, 浏览器访问 http://localhost:8088, 功能与原生 GUI 相同) |
+| Ubuntu 24.04 | 2.39 | ✅ 同包 | **原生 Tauri GUI** (AppImage / deb, webkit2gtk-4.1) |
+
+**16.04 的 GUI 为 Web 形态**: Tauri v2 原生 GUI 需要 webkit2gtk-4.1 (glibc ≥ 2.34 / GCC 8+), 而 16.04 是 glibc 2.23 / GCC 5, 无法运行原生 GUI, 因此以包内自带的 Web 界面替代 (功能与原生 GUI 相同, 16.04 安装任意浏览器即可访问):
+
+```bash
+tar xzf can-monitor-<ver>-linux-aarch64.tar.gz
+cd can-monitor-<ver>-linux-aarch64
+./can-monitor --web-write --backend usbvci --web-port 127.0.0.1:8088
+# 浏览器打开 http://127.0.0.1:8088
+```
+
+远程场景 (无屏幕工控机): `ssh -L 8088:127.0.0.1:8088 user@host`, 详见 [docs/ssh-x11.md](ssh-x11.md)。**24.04 的 GUI 保持原生 Tauri**, 安装 `can-monitor_<ver>_aarch64.AppImage` / `can-monitor_<ver>_arm64.deb` 即可。
 
 ## 紧急修复 (hotfix) 流程
 

@@ -145,6 +145,27 @@ cargo run -- --backend none                              # dev debugging
 
 The GUI (Tauri) form needs webkit2gtk / dbus system packages; see [CONTRIBUTING.md](CONTRIBUTING.md).
 
+## System requirements & support matrix (Linux arm64)
+
+The arm64 (aarch64) CLI/Web release is a **single universal archive**, `can-monitor-0.1.4-linux-aarch64.tar.gz`, built against glibc 2.17 and compatible with both Ubuntu 16.04 and 24.04:
+
+| System | glibc | CLI/Web archive | GUI |
+|--------|-------|-----------------|-----|
+| Ubuntu 16.04 | 2.23 | Yes, single universal archive (glibc 2.17 build) | **Web form** — open http://localhost:8088 in a browser |
+| Ubuntu 24.04 | 2.39 | Same archive | **Native Tauri GUI** (webkit2gtk-4.1) |
+
+**On 16.04 the GUI is the Web form**: the native Tauri GUI needs webkit2gtk-4.1 (glibc >= 2.34), which 16.04 cannot provide, so use the bundled Web UI instead — it has the same features as the native GUI (any browser on 16.04 works):
+
+```bash
+tar xzf can-monitor-0.1.4-linux-aarch64.tar.gz
+cd can-monitor-0.1.4-linux-aarch64
+./can-monitor --web-write --backend usbvci --web-port 127.0.0.1:8088
+# open http://127.0.0.1:8088 in your browser
+# remote (headless PC): ssh -L 8088:127.0.0.1:8088 user@host, see docs/ssh-x11.md
+```
+
+**On 24.04 the GUI is the native Tauri app**: install `can-monitor_0.1.4_aarch64.AppImage` or `can-monitor_0.1.4_arm64.deb`.
+
 ## Device support
 
 | Backend | Platform | Interface / device | Auto-discovery | CANFD | Notes |
