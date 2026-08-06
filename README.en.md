@@ -25,6 +25,8 @@ Two backends (Linux SocketCAN / ZLG USB-CAN), two protocol parsers (CANopen CiA 
 | Web | Rust (axum REST/WS) + React SPA | `cargo run -- --backend none --web-write`, then open `http://127.0.0.1:8080` |
 | GUI | Tauri v2 (Web front end + Rust back end) | `cd src-tauri && cargo tauri dev` |
 
+> **Remote use (headless industrial PC)**: this host has no display. Use SSH to operate the three forms remotely — GUI via X11 forwarding, TUI over a plain SSH session, Web via SSH port forwarding (best headless option). See [docs/ssh-x11.md](docs/ssh-x11.md).
+
 **Bus backends**
 
 - **Linux SocketCAN**: classic CAN + CAN FD (`--fd`), auto-discovery of `can0` / `vcan0` etc. via `/sys/class/net`
@@ -226,6 +228,7 @@ docs/                   architecture / devices / web API / vendor notes
 - [docs/architecture.md](docs/architecture.md) — core layering, fan-out broadcast, classify-once, three-form wiring
 - [docs/devices.md](docs/devices.md) — device extension guide: implement `DeviceDiscoverer` + `CanBackend` + `BackendConfig`
 - [docs/web-api.md](docs/web-api.md) — Web API: REST endpoints / WebSocket contract / frame JSON schema / error codes
+- [docs/ssh-x11.md](docs/ssh-x11.md) — remote usage guide for a headless PC: SSH + X11 forwarding / port forwarding + USB-CAN udev rule
 - [docs/VENDOR.md](docs/VENDOR.md) — vendor SDK origin and distribution notes
 
 ## Known limitations

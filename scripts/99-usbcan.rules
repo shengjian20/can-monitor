@@ -1,0 +1,2 @@
+# CANalyst-II (USB-CAN, 04d8:0053) — 非 root 用户可访问 (同 J-Link 模式)
+SUBSYSTEM=="usb", ATTR{idVendor}=="04d8", ATTR{idProduct}=="0053", MODE="0666"

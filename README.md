@@ -25,6 +25,8 @@ English: [README.en.md](README.en.md)
 | Web | Rust (axum REST/WS) + React SPA | `cargo run -- --backend none --web-write` 后访问 `http://127.0.0.1:8080` |
 | GUI | Tauri v2 (Web 前端 + Rust 后端) | `cd src-tauri && cargo tauri dev` |
 
+> **远程使用 (无屏幕工控机)**: 本机无屏幕, 通过 SSH 远程操作三种形态 — GUI 走 X11 转发, TUI 普通 SSH 即用, Web 走端口转发 (无头最佳)。见 [docs/ssh-x11.md](docs/ssh-x11.md)。
+
 **总线后端**
 
 - **Linux SocketCAN**: 经典 CAN + CAN FD (`--fd`),经 `/sys/class/net` 自动发现 `can0` / `vcan0` 等接口
@@ -226,6 +228,7 @@ docs/                   架构 / 设备扩展 / Web API / 供应商说明
 - [docs/architecture.md](docs/architecture.md) — 架构: core 分层、fan-out 广播、单次分类、三形态接线
 - [docs/devices.md](docs/devices.md) — 设备扩展指南: 实现 `DeviceDiscoverer` + `CanBackend` + `BackendConfig` 接入新设备
 - [docs/web-api.md](docs/web-api.md) — Web API: REST 端点 / WebSocket 契约 / 帧 JSON schema / 错误码
+- [docs/ssh-x11.md](docs/ssh-x11.md) — 无屏幕工控机远程使用指南: SSH + X11 转发 / 端口转发 + USB-CAN udev 规则
 - [docs/VENDOR.md](docs/VENDOR.md) — 供应商 SDK 来源与分发说明
 
 ## 已知限制
