@@ -381,6 +381,7 @@ fn scan_sysfs(net_dir: &Path) -> Vec<CanDeviceInfo> {
             driver,
             details: DeviceDetails::with_model("SocketCAN"),
             available,
+            device_type: 0,
         });
     }
     devices.sort_by(|a, b| a.id.cmp(&b.id));

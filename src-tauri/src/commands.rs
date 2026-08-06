@@ -47,6 +47,8 @@ pub struct DeviceInfoJson {
     pub driver: String,
     pub model: String,
     pub available: bool,
+    /// 设备类型码 (厂商定义; SocketCAN 等无此概念的后端为 0)。
+    pub device_type: u32,
 }
 
 impl From<&CanDeviceInfo> for DeviceInfoJson {
@@ -58,6 +60,7 @@ impl From<&CanDeviceInfo> for DeviceInfoJson {
             driver: d.driver.clone(),
             model: d.details.model.clone(),
             available: d.available,
+            device_type: d.device_type,
         }
     }
 }
@@ -230,7 +233,8 @@ pub fn start_monitor(device_id: String, state: State<'_, TauriState>) -> Result<
                 .parse()
                 .map_err(|_| format!("USBVCI 设备索引无效: {param}"))?;
             let config = BackendConfig::UsbVci {
-                device_type: can_usbvci::VCI_USBCAN2,
+                // 配置类型仅作探测候选之一, 后端按 find 板卡信息映射首选 (2E_U=21)。
+                device_type: can_usbvci::VCI_USBCAN_2E_U,
                 device_index,
                 channel: 0,
             };

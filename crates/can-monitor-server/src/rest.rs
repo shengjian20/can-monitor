@@ -27,7 +27,7 @@ use crate::AppState;
 
 /// 设备信息 JSON (`GET /api/devices` 返回元素)。
 ///
-/// 与 Tauri `list_devices` 返回结构一致 (id/name/kind/driver/model/available)。
+/// 与 Tauri `list_devices` 返回结构一致 (id/name/kind/driver/model/available/device_type)。
 #[derive(Debug, Clone, Serialize)]
 pub struct DeviceInfoJson {
     /// 设备唯一标识 (如 `socketcan:can0` / `usbvci:0`)。
@@ -42,6 +42,8 @@ pub struct DeviceInfoJson {
     pub model: String,
     /// 当前是否可用。
     pub available: bool,
+    /// 设备类型码 (厂商定义; SocketCAN 等无此概念的后端为 0)。
+    pub device_type: u32,
 }
 
 impl From<&CanDeviceInfo> for DeviceInfoJson {
@@ -53,6 +55,7 @@ impl From<&CanDeviceInfo> for DeviceInfoJson {
             driver: d.driver.clone(),
             model: d.details.model.clone(),
             available: d.available,
+            device_type: d.device_type,
         }
     }
 }

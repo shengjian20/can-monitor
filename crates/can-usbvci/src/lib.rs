@@ -39,7 +39,7 @@
 mod backend;
 mod ffi;
 
-pub use backend::{UsbVciBackend, UsbVciDiscoverer};
+pub use backend::{map_hw_type_to_device_type, UsbVciBackend, UsbVciDiscoverer};
 
 pub use ffi::{
     VCI_ClearBuffer, VCI_CloseDevice, VCI_FindUsbDevice2, VCI_GetReceiveNum, VCI_InitCAN,

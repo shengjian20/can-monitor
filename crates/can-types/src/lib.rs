@@ -541,6 +541,10 @@ pub struct CanDeviceInfo {
     pub details: DeviceDetails,
     /// 设备当前是否可用 (已连接且可打开)。
     pub available: bool,
+    /// 设备类型码 (厂商定义, 如 USBCAN 的 VCI 设备类型 4/21)。
+    ///
+    /// 由后端在发现时填充;不适用该概念的后端 (如 SocketCAN) 保持默认值 `0`。
+    pub device_type: u32,
 }
 
 /// 设备发现抽象。

@@ -78,6 +78,7 @@ mod tests {
             driver: "socketcan".to_string(),
             details: DeviceDetails::with_model("SocketCAN"),
             available: true,
+            device_type: 0,
         }
     }
 
@@ -90,6 +91,7 @@ mod tests {
             driver: "usbvci".to_string(),
             details: DeviceDetails::with_model(model),
             available: true,
+            device_type: 0,
         }
     }
 

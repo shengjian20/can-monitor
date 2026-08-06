@@ -47,7 +47,10 @@ fn run(cli: CliArgs) -> Result<(), Box<dyn std::error::Error>> {
         }
         "usbvci" => {
             let config = BackendConfig::UsbVci {
-                device_type: can_usbvci::VCI_USBCAN2,
+                // 配置类型仅作探测候选之一: 后端会先经 VCI_FindUsbDevice2 读板卡
+                // 信息按 hw_type 映射首选类型 (2E_U = 21), 再依次回退到本值 /
+                // 2E_U / USBCAN2, 首个打开成功的类型即有效设备类型。
+                device_type: can_usbvci::VCI_USBCAN_2E_U,
                 device_index: 0,
                 channel: 0,
             };
