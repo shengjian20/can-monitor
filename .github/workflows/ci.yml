@@ -12,11 +12,15 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
+        # ubuntu-24.04-arm: GitHub 公共仓库免费的原生 arm64 (aarch64) runner
+        # (public preview); 与 ubuntu-latest 同跑全量门禁 (include 合并 components)。
+        os: [ubuntu-latest, ubuntu-24.04-arm, windows-latest, macos-latest]
         include:
           # 仅 Linux 跑全量测试 (test/clippy/fmt/purity), 需额外装 clippy + rustfmt 组件;
           # Windows/macOS 只做 cargo check, 不装额外组件 (components 为空)
           - os: ubuntu-latest
+            components: clippy, rustfmt
+          - os: ubuntu-24.04-arm
             components: clippy, rustfmt
 
     steps:
@@ -43,7 +47,7 @@ jobs:
       # Tauri v2 的 Linux 系统依赖 (备用): 当前纯 Rust workspace 构建不需要,
       # 为后续 GUI 工作区 (Task 25 之后) 提前装好
       - name: Install Linux system deps (Tauri fallback)
-        if: matrix.os == 'ubuntu-latest'
+        if: startsWith(matrix.os, 'ubuntu')
         run: |
           sudo apt-get update
           sudo apt-get install -y \
@@ -57,26 +61,26 @@ jobs:
 
       # ---------- Linux only: 全量质量门禁 ----------
       - name: cargo test --workspace
-        if: matrix.os == 'ubuntu-latest'
+        if: startsWith(matrix.os, 'ubuntu')
         run: cargo test --workspace
 
       - name: cargo clippy (all targets, deny warnings)
-        if: matrix.os == 'ubuntu-latest'
+        if: startsWith(matrix.os, 'ubuntu')
         run: cargo clippy --workspace --all-targets -- -D warnings
 
       - name: cargo fmt --check
-        if: matrix.os == 'ubuntu-latest'
+        if: startsWith(matrix.os, 'ubuntu')
         run: cargo fmt --check
 
       - name: core purity check
-        if: matrix.os == 'ubuntu-latest'
+        if: startsWith(matrix.os, 'ubuntu')
         run: bash scripts/check-core-purity.sh
 
       # vcan 集成测试 (can-socketcan, feature 门控):
       # GitHub runner 通常无内核模块权限 → modprobe 失败即跳过, 不 fail。
       # continue-on-error + || true 双保险, 保证该步骤挂了也不影响 job 结论。
       - name: vcan integration test (can-socketcan)
-        if: matrix.os == 'ubuntu-latest'
+        if: startsWith(matrix.os, 'ubuntu')
         continue-on-error: true
         run: |
           if ! sudo modprobe vcan 2>/dev/null; then

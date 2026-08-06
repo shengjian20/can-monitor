@@ -326,7 +326,8 @@ fn library_filename() -> &'static str {
 }
 
 /// 解析 VCI 动态库路径, 优先级: `CAN_USBVCI_LIB` 环境变量 → 可执行文件同目录 →
-/// 系统搜索路径 (Linux 经 dlopen 的 LD_LIBRARY_PATH / rpath / ldconfig; Windows 经
+/// Linux Tauri 打包资源目录 (见 find_tauri_resource_lib, 仅 Linux) → 系统搜索路径
+/// (Linux 经 dlopen 的 LD_LIBRARY_PATH / rpath / ldconfig; Windows 经
 /// LoadLibrary 的 exe 目录 / System32 / PATH)。
 ///
 /// @return 最终交给 `Library::new` 的路径或文件名。
@@ -344,9 +345,50 @@ fn resolve_library() -> Result<PathBuf> {
             if candidate.is_file() {
                 return Ok(candidate);
             }
+            #[cfg(target_os = "linux")]
+            {
+                // Tauri 打包回退: 发行包资源在 usr/lib/can-monitor/<arch>/, 相对 exe
+                // 目录为 ../lib/can-monitor/<arch>/ (AppImage 挂载后与 deb 布局一致)。
+                if let Some(resource) = find_tauri_resource_lib(dir) {
+                    return Ok(resource);
+                }
+            }
         }
     }
     Ok(PathBuf::from(library_filename()))
+}
+
+/// 在 Tauri Linux 打包资源目录中定位供应商库。
+///
+/// 发行包 (AppImage / deb) 的目录布局: 可执行文件在 `usr/bin/`, 而 tauri.conf.json
+/// 的 `resources` 把供应商库打进 `usr/lib/can-monitor/<arch>/libcontrolcan.so`
+/// (AppImage 挂载后与 deb 安装布局相同)。dlopen 不会搜索该目录, 故按相对 exe 目录的
+/// `../lib/can-monitor/<arch>/` 优先、平铺的 `../lib/can-monitor/` 兜底的顺序拼接候选
+/// 路径, `is_file()` 命中即返回。
+///
+/// @param exe_dir 可执行文件所在目录 (通常为 `usr/bin`)。
+/// @return 命中返回库文件路径; 未命中返回 `None`, 由调用方回退到 dlopen 系统搜索。
+#[cfg(target_os = "linux")]
+#[cfg(not(feature = "mock"))]
+#[cfg(not(usbvci_static_link))]
+fn find_tauri_resource_lib(exe_dir: &Path) -> Option<PathBuf> {
+    // 编译期架构目录名, 与 tauri.conf.json 的 resources 映射键一致。
+    let arch_dir = if cfg!(target_arch = "aarch64") {
+        "aarch64"
+    } else {
+        "x86_64"
+    };
+    let candidates = [
+        format!("lib/can-monitor/{arch_dir}"),
+        "lib/can-monitor".to_string(),
+    ];
+    for rel in &candidates {
+        let candidate = exe_dir.join("..").join(rel).join(library_filename());
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+    }
+    None
 }
 
 /// 加载 VCI 动态库。
@@ -1518,5 +1560,104 @@ mod real_ffi_tests {
         let result = RealVciOps::try_new();
         std::env::remove_var("CAN_USBVCI_LIB");
         assert!(result.is_err(), "库缺失时 try_new 应返回 Err, 而非 panic");
+    }
+}
+
+/// Tauri Linux 打包资源目录回退测试 (非 mock / 非 static 链接): 验证发行包布局下
+/// resolve_library 能从 exe 的 `../lib/can-monitor/<arch>/` 资源目录定位供应商库。
+#[cfg(all(
+    test,
+    target_os = "linux",
+    not(feature = "mock"),
+    not(usbvci_static_link)
+))]
+mod tauri_resource_tests {
+    use super::*;
+
+    /// 创建唯一的临时根目录 (前缀含标签与进程号, 避免并行测试互撞)。
+    fn temp_dir(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "can-usbvci-tauri-resolve-{tag}-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// exe 目录 = 临时根/bin: 其父目录即本测试独占的根, `../lib/can-monitor/..`
+    /// 不会与并行测试的产物互撞。
+    fn exe_dir(root: &Path) -> PathBuf {
+        let dir = root.join("bin");
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// 编译期架构目录名, 与 find_tauri_resource_lib 内部映射保持一致。
+    fn arch_dir() -> &'static str {
+        if cfg!(target_arch = "aarch64") {
+            "aarch64"
+        } else {
+            "x86_64"
+        }
+    }
+
+    /// 在 `exe_dir/../<rel>/libcontrolcan.so` 造一个假供应商库, 返回其路径。
+    fn plant_lib(exe_dir: &Path, rel: &str) -> PathBuf {
+        let lib = exe_dir.join("..").join(rel).join("libcontrolcan.so");
+        std::fs::create_dir_all(lib.parent().unwrap()).unwrap();
+        std::fs::write(&lib, b"fake controlcan lib").unwrap();
+        lib
+    }
+
+    /// 命中 <arch>/ 子目录: `../lib/can-monitor/<arch>/libcontrolcan.so` 存在即返回。
+    #[test]
+    fn find_tauri_resource_lib_hits_arch_subdir() {
+        let root = temp_dir("arch");
+        let exe = exe_dir(&root);
+        let expected = plant_lib(&exe, &format!("lib/can-monitor/{}", arch_dir()));
+        let found = find_tauri_resource_lib(&exe).expect("应命中 <arch>/ 资源目录");
+        assert_eq!(found, expected);
+    }
+
+    /// <arch>/ 与平铺目录同时存在 → <arch>/ 优先命中。
+    #[test]
+    fn find_tauri_resource_lib_prefers_arch_over_flat() {
+        let root = temp_dir("prefer");
+        let exe = exe_dir(&root);
+        let arch_lib = plant_lib(&exe, &format!("lib/can-monitor/{}", arch_dir()));
+        let _flat_lib = plant_lib(&exe, "lib/can-monitor");
+        let found = find_tauri_resource_lib(&exe).expect("应命中资源目录");
+        assert_eq!(found, arch_lib);
+    }
+
+    /// 平铺兜底: 仅 `../lib/can-monitor/libcontrolcan.so` 存在 → 命中平铺路径。
+    #[test]
+    fn find_tauri_resource_lib_falls_back_to_flat_dir() {
+        let root = temp_dir("flat");
+        let exe = exe_dir(&root);
+        let expected = plant_lib(&exe, "lib/can-monitor");
+        let found = find_tauri_resource_lib(&exe).expect("应命中平铺资源目录");
+        assert_eq!(found, expected);
+    }
+
+    /// 资源目录缺库 → 返回 None (resolve_library 回退到 dlopen 系统搜索)。
+    #[test]
+    fn find_tauri_resource_lib_returns_none_when_missing() {
+        let root = temp_dir("missing");
+        let exe = exe_dir(&root);
+        assert!(
+            find_tauri_resource_lib(&exe).is_none(),
+            "资源目录无库时应返回 None"
+        );
+    }
+
+    /// 全链路: exe 同目录与资源目录均无库 → resolve_library 回退到裸文件名
+    /// (交 dlopen 的 LD_LIBRARY_PATH / rpath / 系统搜索)。
+    #[test]
+    fn resolve_library_falls_back_to_bare_filename() {
+        std::env::remove_var("CAN_USBVCI_LIB");
+        let path = resolve_library().expect("解析库路径不应失败");
+        assert_eq!(path, PathBuf::from("libcontrolcan.so"));
     }
 }
