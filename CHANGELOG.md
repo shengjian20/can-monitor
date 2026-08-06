@@ -4,6 +4,17 @@ can-monitor 的变更记录, 遵循 [Keep a Changelog](https://keepachangelog.co
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-08-06
+
+### Added
+
+- **CLI / Web 二进制发布资产**: 发布矩阵新增 `cli-web` job, 三平台产出 CLI + Web 二进制压缩包 (tar.gz / zip), 随 Release 一同发布, 无 GUI 场景可直接下载二进制使用
+
+### Fixed
+
+- **USBCAN 2E_U 设备类型自动探测**: 设备类型改由板卡信息自动识别 (2E_U = 21), 不再硬编码默认类型 (d284b51)
+- **USBCAN open 路径修复**: 移除 open 前的 find 自冲突 (避免 usbfs claim 冲突), 设备号显式写入 device_id (3a6ab94)
+
 ## [0.1.1] - 2026-08-06
 
 ### Added
@@ -26,6 +37,7 @@ can-monitor 的变更记录, 遵循 [Keep a Changelog](https://keepachangelog.co
 - **三平台 CI**: Ubuntu / Windows / macOS 交叉检查 + Linux 全量门禁 (test / clippy / fmt / core 纯度)
 - **Docker 镜像**: ghcr.io 自动构建发布
 
-[Unreleased]: https://github.com/shengjian20/can-monitor/compare/v0.1.1...HEAD
+[Unreleased]: https://github.com/shengjian20/can-monitor/compare/v0.1.2...HEAD
+[0.1.2]: https://github.com/shengjian20/can-monitor/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/shengjian20/can-monitor/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/shengjian20/can-monitor/releases/tag/v0.1.0
