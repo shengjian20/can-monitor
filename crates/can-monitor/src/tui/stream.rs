@@ -17,9 +17,9 @@ use ratatui::widgets::{Block, Borders, Cell, Row, Table, TableState};
 
 use can_types::Direction;
 
+use crate::tui::app::DisplayMessage;
 use can_monitor_core::classifier::ParsedMessage;
 use can_monitor_core::filter::{HighlightStyle, Highlighter};
-use crate::tui::app::DisplayMessage;
 
 /// 报文流列表组件。
 ///
