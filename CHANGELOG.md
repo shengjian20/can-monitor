@@ -4,6 +4,12 @@ can-monitor 的变更记录, 遵循 [Keep a Changelog](https://keepachangelog.co
 
 ## [Unreleased]
 
+## [0.1.4] - 2026-08-06
+
+### Fixed
+
+- **USB-CAN 驱动换 libusbcan_v351 (固件 3.51 专用)**: x86_64 的 `libcontrolcan.so` 由 SDK V1.45 原版替换为用户提供的 v351 驱动 — 修复 CAN-Linux 设备 (固件 3.51) 用 V1.45 库打开失败 (`Device or resource busy`) 的问题;真机实测 OpenDevice(4)/InitCAN/StartCAN/Transmit(0x181, SendType=1) 全部返回 1, `--backend usbvci` 打开成功 (md5 `2ec9b05066ba44b67cfec7d535f99763`)。**依赖 `libusb-1.0`**: 目标系统需已安装 `libusb-1.0.so.0` (Ubuntu: `apt install libusb-1.0-0`)。aarch64 无 v351 arm64 版, 保持 SDK V1.45 库
+
 ## [0.1.3] - 2026-08-06
 
 ### Fixed
@@ -54,7 +60,8 @@ can-monitor 的变更记录, 遵循 [Keep a Changelog](https://keepachangelog.co
 - **三平台 CI**: Ubuntu / Windows / macOS 交叉检查 + Linux 全量门禁 (test / clippy / fmt / core 纯度)
 - **Docker 镜像**: ghcr.io 自动构建发布
 
-[Unreleased]: https://github.com/shengjian20/can-monitor/compare/v0.1.3...HEAD
+[Unreleased]: https://github.com/shengjian20/can-monitor/compare/v0.1.4...HEAD
+[0.1.4]: https://github.com/shengjian20/can-monitor/compare/v0.1.3...v0.1.4
 [0.1.3]: https://github.com/shengjian20/can-monitor/compare/v0.1.2...v0.1.3
 [0.1.2]: https://github.com/shengjian20/can-monitor/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/shengjian20/can-monitor/compare/v0.1.0...v0.1.1
