@@ -4,6 +4,23 @@ can-monitor 的变更记录, 遵循 [Keep a Changelog](https://keepachangelog.co
 
 ## [Unreleased]
 
+## [0.1.3] - 2026-08-06
+
+### Fixed
+
+- **USB 权限 udev 规则对齐官方**: 规则改为厂商官方格式 `SUBSYSTEMS`/`ATTRS`(双 S 匹配父设备) + `GROUP="users"` + `MODE="0777"`, 并保留 `ID_MM_DEVICE_IGNORE=1` (f5ce9b9)
+- **third_party 厂商库换回 SDK V1.45 原版**: `libcontrolcan.so` 原为异版, 替换为 Linux 资料包 V1.45 原版库 (x86_64/aarch64, md5 双验证) (456c982)
+- **CAN-Linux 设备类型对齐官方样例 VCI_USBCAN2**: 默认设备类型由 2E_U(21) 改回 USBCAN2(4), 与厂商官方样例一致; 探测顺序 [配置, 4, 21] 去重 (c1cfc6b)
+- **SendType=1 单次发送 + Receive 批量 2500**: 发送帧显式 `SendType=SEND_TYPE_SINGLE(1)` (官方 2.1.3 建议), Receive 批量接收数组 64→2500 (c1cfc6b)
+
+### Changed
+
+- **arm64 CLI/Web 构建 glibc 2.17 双兼容**: cli-web job 的 aarch64 产物改用 `cargo-zigbuild` + glibc 2.17 目标, 单包同时兼容 Ubuntu 16.04 (glibc 2.23) 与 24.04 (glibc 2.39); 构建后 readelf 断言 max GLIBC < 2.24, 超限 fail (abd6ff7)
+
+### Docs
+
+- **Linux arm64 支持矩阵**: 16.04 用 Web 形态 GUI (浏览器访问包内 Web 界面), 24.04 用原生 Tauri GUI (webkit2gtk-4.1) (45147a0)
+
 ## [0.1.2] - 2026-08-06
 
 ### Added
@@ -37,7 +54,8 @@ can-monitor 的变更记录, 遵循 [Keep a Changelog](https://keepachangelog.co
 - **三平台 CI**: Ubuntu / Windows / macOS 交叉检查 + Linux 全量门禁 (test / clippy / fmt / core 纯度)
 - **Docker 镜像**: ghcr.io 自动构建发布
 
-[Unreleased]: https://github.com/shengjian20/can-monitor/compare/v0.1.2...HEAD
+[Unreleased]: https://github.com/shengjian20/can-monitor/compare/v0.1.3...HEAD
+[0.1.3]: https://github.com/shengjian20/can-monitor/compare/v0.1.2...v0.1.3
 [0.1.2]: https://github.com/shengjian20/can-monitor/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/shengjian20/can-monitor/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/shengjian20/can-monitor/releases/tag/v0.1.0
