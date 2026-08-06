@@ -178,6 +178,9 @@ jobs:
         shell: bash
         run: |
           set -euxo pipefail
+          # 步骤内 PATH 提前 export (GITHUB_PATH 只对后续步骤生效, 本步验证需要
+          # 立即可见的 zig/cargo-zigbuild); GITHUB_PATH 追加行保留供后续构建步骤)
+          export PATH="$HOME/zig:$HOME/czb:$PATH"
           ZIG_VERSION=0.16.0
           CZB_VERSION=0.23.0
           # zig: 官方 aarch64-linux tarball, 解压到 $HOME/zig, 加入 PATH
