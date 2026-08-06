@@ -27,8 +27,22 @@ can-monitor 的版本管理遵循 [语义化版本](https://semver.org/lang/zh-C
 2. **bump 版本号**: 同步修改 `src-tauri/Cargo.toml` 与 `src-tauri/tauri.conf.json` 两处 `version`
 3. **提交**: 单独一个提交 `chore(release): v0.1.x`, 只含上述改动, 不夹带其他文件
 4. **打 tag 并推送**: `git tag v0.1.x && git push origin v0.1.x`。tag 只在 main 上打, 只推 `v*` 格式
-5. **自动构建**: `release.yml` 由 tag push 触发, 在 `ubuntu-latest` (x86_64) / `ubuntu-24.04-arm` (aarch64) / `windows-latest` 三个 runner 上经 tauri-action 构建 (Linux: AppImage / deb / rpm; Windows: MSI / NSIS)
+5. **自动构建**: `release.yml` 由 tag push 触发, 在 `ubuntu-latest` (x86_64) / `ubuntu-24.04-arm` (aarch64) / `windows-latest` 三个 runner 上经 tauri-action 构建 GUI (Linux: AppImage / deb / rpm; Windows: MSI / NSIS), 并同步由 `cli-web` 任务构建 CLI/Web 形态资产 (见下节) 上传到同一个 release
 6. **人工核对发布**: 构建产物以 **draft release** 上传, 维护者核对三平台产物齐全后手动 Publish 正式发布
+
+### 发布产物清单 (draft release)
+
+**GUI 资产** (`publish` 任务, tauri-action): Linux 每平台 AppImage / deb / rpm (x86_64 与 aarch64 各一套); Windows MSI / NSIS exe。
+
+**CLI/Web 资产** (`cli-web` 任务, 与 GUI 资产同 release):
+
+| 平台 | 产物 | 内容 |
+|------|------|------|
+| Linux x86_64 | `can-monitor-<ver>-linux-x86_64.tar.gz` | `can-monitor` 二进制 + `libcontrolcan.so` (x86_64) + `web/dist/` + `README.md` |
+| Linux aarch64 | `can-monitor-<ver>-linux-aarch64.tar.gz` | `can-monitor` 二进制 + `libcontrolcan.so` (aarch64) + `web/dist/` + `README.md` |
+| Windows x86_64 | `can-monitor-<ver>-windows-x86_64.zip` | `can-monitor.exe` + `ControlCAN.dll` (win64) + `web/dist/` + `README.md` |
+
+版本号取自 tag (`v0.1.2` → 产物名 `0.1.2`)。CLI/Web 资产为 **CLI+TUI+Web 一体二进制**: 解压后直接运行 `./can-monitor --help`; `--backend none --web-write` 起 Web 界面 (http://127.0.0.1:8080); `--backend usbvci` 用 USB-CAN (厂商库已放二进制同目录, 开箱即用)。**注意**: Web 静态文件按当前工作目录相对 `web/dist` 解析, 请在解压目录内运行。
 
 ## 紧急修复 (hotfix) 流程
 

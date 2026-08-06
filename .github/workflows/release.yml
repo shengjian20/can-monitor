@@ -104,3 +104,130 @@ jobs:
           releaseDraft: true
           prerelease: false
           args: --verbose
+
+  # CLI/Web 形态发布资产: 每个平台构建 can-monitor 二进制 (CLI+TUI+Web 一体),
+  # 打包 (含厂商库 + web/dist + 简短 README) 并上传到 publish 创建的同一个 draft release。
+  # 依赖 publish: 等 tauri-action 把 release 建出来后再向它追加资产。
+  cli-web:
+    name: cli-web (${{ matrix.os }})
+    needs: publish
+    runs-on: ${{ matrix.os }}
+    # gh release upload 需要向既有 release 追加资产 → contents: write
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        # 平台后缀与厂商库来源: 与 publish 同款三平台 (ubuntu-latest → x86_64,
+        # ubuntu-24.04-arm → aarch64, windows-latest → x86_64)。include 按 os 合并附加键。
+        os: [ubuntu-latest, ubuntu-24.04-arm, windows-latest]
+        include:
+          - os: ubuntu-latest
+            platform: linux-x86_64
+            vendor_lib: third_party/controlcan/x86_64/libcontrolcan.so
+          - os: ubuntu-24.04-arm
+            platform: linux-aarch64
+            vendor_lib: third_party/controlcan/aarch64/libcontrolcan.so
+          - os: windows-latest
+            platform: windows-x86_64
+            vendor_lib: third_party/controlcan/win64/ControlCAN.dll
+    env:
+      # gh 上传用 token (与 secrets.GITHUB_TOKEN 等价)
+      GH_TOKEN: ${{ github.token }}
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      # Node 22 (LTS): 与 publish job / ci.yml 同款; 产出 web/dist 供二进制 Web 形态托管
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+
+      # 缓存 cargo registry + target (can-monitor release 构建全依赖链, 缓存收益大)
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            . -> target
+
+      # 前端构建: web/dist 由 can-monitor 二进制按 CWD 相对解析 (静态托管来源)
+      - name: Build frontend (web/)
+        run: |
+          npm --prefix web ci
+          npm --prefix web run build
+
+      # 构建 CLI+TUI+Web 一体二进制 (workspace [profile.release]: lto + strip)
+      # 厂商库走运行时 dlopen (T10), 构建期不链接 → 无需特殊依赖
+      - name: Build can-monitor binary (release)
+        run: cargo build --release -p can-monitor
+
+      # ---- Linux (x86_64 / aarch64): 组装目录 → tar.gz ----
+      - name: Package (Linux tar.gz)
+        if: startsWith(matrix.os, 'ubuntu')
+        shell: bash
+        run: |
+          set -euxo pipefail
+          VERSION="${GITHUB_REF_NAME#v}"
+          PLAT="${{ matrix.platform }}"
+          ASSET="can-monitor-${VERSION}-${PLAT}.tar.gz"
+          STAGE="staging/can-monitor-${VERSION}-${PLAT}"
+          mkdir -p "${STAGE}"
+          cp target/release/can-monitor "${STAGE}/can-monitor"
+          # 厂商库放二进制同目录 → 加载器 exe 同目录优先, 开箱即用
+          cp "${{ matrix.vendor_lib }}" "${STAGE}/libcontrolcan.so"
+          cp -r web/dist "${STAGE}/web"
+          {
+            printf '%s\n' '# can-monitor (CLI + TUI + Web)' '' \
+              '一体二进制: TUI 终端监控 / Web 浏览器界面 / CLI 命令, 无需安装。' '' \
+              '用法:' \
+              '  ./can-monitor --help' \
+              '  ./can-monitor --backend none --web-write   # TUI + Web 界面 (http://127.0.0.1:8080)' \
+              '  ./can-monitor --backend socketcan --iface can0' \
+              '  ./can-monitor --backend usbvci             # USB-CAN, 厂商库 libcontrolcan.so 已在本目录' '' \
+              '提示: Web 静态文件按当前工作目录相对 web/dist 解析, 请在解压后的目录内运行。'
+          } > "${STAGE}/README.md"
+          tar -C staging -czf "${ASSET}" "can-monitor-${VERSION}-${PLAT}"
+          ls -lh "${ASSET}"
+
+      # ---- Windows: 组装目录 → zip (PowerShell Compress-Archive) ----
+      - name: Package (Windows zip)
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        run: |
+          $version = $env:GITHUB_REF_NAME -replace '^v', ''
+          $platform = "${{ matrix.platform }}"
+          $asset = "can-monitor-${version}-${platform}.zip"
+          $stage = "staging\can-monitor-${version}-${platform}"
+          New-Item -ItemType Directory -Force -Path $stage | Out-Null
+          Copy-Item "target\release\can-monitor.exe" "$stage\can-monitor.exe"
+          # 厂商库放二进制同目录 → 加载器 exe 同目录优先, 开箱即用
+          Copy-Item "${{ matrix.vendor_lib }}" "$stage\ControlCAN.dll"
+          Copy-Item -Recurse "web\dist" "$stage\web"
+          $readmeLines = @(
+            '# can-monitor (CLI + TUI + Web)'
+            ''
+            '一体二进制: TUI 终端监控 / Web 浏览器界面 / CLI 命令, 无需安装。'
+            ''
+            '用法:'
+            '  .\can-monitor.exe --help'
+            '  .\can-monitor.exe --backend none --web-write   # TUI + Web 界面 (http://127.0.0.1:8080)'
+            '  .\can-monitor.exe --backend socketcan --iface can0'
+            '  .\can-monitor.exe --backend usbvci             # USB-CAN, 厂商库 ControlCAN.dll 已在本目录'
+            ''
+            '提示: Web 静态文件按当前工作目录相对 web/dist 解析, 请在解压后的目录内运行。'
+          )
+          Set-Content -Path "$stage\README.md" -Value ($readmeLines -join "`n") -Encoding UTF8
+          Compress-Archive -Path $stage -DestinationPath $asset
+          Get-Item $asset | Select-Object Name, Length
+
+      # 上传到 publish 创建的同一 release (draft 亦可上传); --clobber 允许重跑覆盖
+      - name: Upload assets to release
+        shell: bash
+        run: |
+          set -euxo pipefail
+          VERSION="${GITHUB_REF_NAME#v}"
+          PLAT="${{ matrix.platform }}"
+          if [[ "${PLAT}" == windows-* ]]; then EXT="zip"; else EXT="tar.gz"; fi
+          ASSET="can-monitor-${VERSION}-${PLAT}.${EXT}"
+          gh release upload "${{ github.ref_name }}" "${ASSET}" --clobber
