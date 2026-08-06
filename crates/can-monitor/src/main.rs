@@ -52,7 +52,7 @@ fn run(cli: CliArgs) -> Result<(), Box<dyn std::error::Error>> {
             let (device_index, device_type) = parse_usbvci_backend(spec)?;
             let config = BackendConfig::UsbVci {
                 // device_type 为探测首候选 (0=未指定); 后端无 find 探测,
-                // 依次尝试 [本值, 2E_U, USBCAN2] 去重, 首个成功即有效类型。
+                // 依次尝试 [本值, USBCAN2, 2E_U] 去重, 首个成功即有效类型。
                 device_type,
                 device_index,
                 channel: 0,
@@ -99,8 +99,8 @@ fn run(cli: CliArgs) -> Result<(), Box<dyn std::error::Error>> {
 
 /// 解析 `--backend usbvci[:index][:type]` 形式的显式设备参数。
 ///
-/// - `usbvci`      → 索引 0, 类型默认 [`VCI_USBCAN_2E_U`] (21, 本机 2E-U 设备);
-///   后端按 [21, 4] 候选探测, 仍可回退。
+/// - `usbvci`      → 索引 0, 类型默认 [`VCI_USBCAN2`] (4, 官方样例全部用 4 打开);
+///   后端按 [4, 21] 候选探测, 仍可回退。
 /// - `usbvci:21`   → 索引 0, 类型 21 (单段 = 显式指定类型)。
 /// - `usbvci:0:21` → 索引 0, 类型 21 (两段 = [索引, 类型])。
 ///
@@ -114,7 +114,7 @@ fn parse_usbvci_backend(spec: &str) -> Result<(u32, u32), String> {
         ));
     }
     let mut index = 0u32;
-    let mut device_type = can_usbvci::VCI_USBCAN_2E_U;
+    let mut device_type = can_usbvci::VCI_USBCAN2;
     match segments.get(1) {
         None => {}
         Some(seg) if segments.len() == 2 => {

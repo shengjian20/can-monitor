@@ -233,8 +233,9 @@ pub fn start_monitor(device_id: String, state: State<'_, TauriState>) -> Result<
                 .parse()
                 .map_err(|_| format!("USBVCI 设备索引无效: {param}"))?;
             let config = BackendConfig::UsbVci {
-                // 配置类型仅作探测候选之一, 后端按 find 板卡信息映射首选 (2E_U=21)。
-                device_type: can_usbvci::VCI_USBCAN_2E_U,
+                // 配置类型仅作探测候选之一, 后端按 [USBCAN2, 2E_U] 候选探测
+                // (官方样例全部用 4 打开设备)。
+                device_type: can_usbvci::VCI_USBCAN2,
                 device_index,
                 channel: 0,
             };

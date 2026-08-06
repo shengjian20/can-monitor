@@ -56,10 +56,23 @@ use crate::ffi::{
 // ---------------------------------------------------------------------------
 
 /// 轮询节奏: 驱动接收缓冲为空时每次等待的时长 (vendor 轮询节奏)。
+///
+/// 官方建议 "每隔 30ms 调用一次 VCI_Receive 为宜" (接口函数库说明书 2.2.10),
+/// 保持 30ms。
 const POLL_INTERVAL: Duration = Duration::from_millis(30);
 
-/// 单次批量接收的最大帧数。
-const MAX_RX_BATCH: usize = 64;
+/// 单次批量接收的最大帧数 (`VCI_Receive` 的 Len, 即 `pReceive` 数组长度)。
+///
+/// 官方建议 "一般 pReceive 数组大小与 Len 都设置大于 2000, 如: 2500 为宜"
+/// (接口函数库说明书 2.2.10) —— 硬件每通道约 2000 帧接收缓存, 单次取够整批,
+/// 避免忙时缓冲溢出。
+const MAX_RX_BATCH: usize = 2500;
+
+/// 发送帧的 `SendType`: 单次发送 (只发一次, 失败不自动重发)。
+///
+/// 官方建议 "二次开发, 建议 SendType=1, 提高发送的响应速度" (接口函数库说明书
+/// 2.1.3); 0 = 正常发送 (失败自动重发, 重发时间 4 秒)。
+const SEND_TYPE_SINGLE: u8 = 1;
 
 /// 热插拔重连前等待设备重新枚举的最小时长 (≥2s)。
 #[cfg(not(feature = "mock"))]
@@ -122,18 +135,22 @@ const MAX_BOARD_INFO_CAP: usize = 16;
 /// 填充 [`CanDeviceInfo::device_type`]。
 ///
 /// 映射规则 (顺序敏感, 先匹配先返回):
-/// - 型号为 `"CAN-Linux"` 或含 `"2E_U"` → [`VCI_USBCAN_2E_U`] (21) —— 实测
-///   USBCAN-2E_U 在 Linux 驱动下上报的 hw_type 即 `"CAN-Linux"`。
+/// - 型号含 `"2E_U"` → [`VCI_USBCAN_2E_U`] (21)。
 /// - 型号含 `"USBCAN2"` 或 `"CANalyst"` → [`VCI_USBCAN2`] (4)。
 /// - 型号含 `"USBCAN1"` → [`VCI_USBCAN1`] (3)。
 /// - 型号含 `"E_U"` → [`VCI_USBCAN_E_U`] (20) —— 须在 `"2E_U"` 分支之后判断
 ///   (2E_U 型号也含 `E_U`, 先判 `2E_U` 才能得到 21)。
 /// - 其余型号 → [`VCI_USBCAN2`] (4) 默认。
 ///
+/// 厂商文档通读结论 (v2-vendor-doc-review): 官方全部样例 (C/Python/QT/多卡) 均用
+/// [`VCI_USBCAN2`] (4) 打开设备, 含 Linux 驱动下上报 hw_type=`"CAN-Linux"` 的
+/// 2E_U 设备 —— 故 `"CAN-Linux"` 不再特判为 21, 落到默认 4; 仅型号显式含
+/// `"2E_U"` 才映射 21。
+///
 /// @param hw_type 厂商 `str_hw_Type` 字段提取的硬件类型字符串 (如 `"CAN-Linux"`)。
 /// @return 对应的 VCI 设备类型码。
 pub fn map_hw_type_to_device_type(hw_type: &str) -> u32 {
-    if hw_type == "CAN-Linux" || hw_type.contains("2E_U") {
+    if hw_type.contains("2E_U") {
         VCI_USBCAN_2E_U
     } else if hw_type.contains("USBCAN2") || hw_type.contains("CANalyst") {
         VCI_USBCAN2
@@ -571,10 +588,10 @@ impl VciOps for RealVciOps {
 /// 仅支持经典 CAN (标准帧 / 扩展帧 / 远程帧), CANFD 帧会返回
 /// [`CanError::Unsupported`]。
 pub struct UsbVciBackend {
-    /// 有效设备类型码 (探测成功后固定, 如 `VCI_USBCAN_2E_U`)。
+    /// 有效设备类型码 (探测成功后固定, 如 `VCI_USBCAN2`)。
     ///
     /// 由 [`CanBackend::open`] 经安全探测确定 (不做 find, 见 [`Self::probe_and_open`]):
-    /// 按 [配置类型, 2E_U, USBCAN2] 去重后的顺序依次尝试 `VCI_OpenDevice`,
+    /// 按 [配置类型, USBCAN2, 2E_U] 去重后的顺序依次尝试 `VCI_OpenDevice`,
     /// 首个完整打开成功者即有效类型。构造时 (`new_with`) 暂存配置值, 后续
     /// init/start/transmit/receive/close 一律使用该字段而非配置值。
     device_type: u32,
@@ -688,8 +705,8 @@ impl UsbVciBackend {
 
     /// 按安全探测顺序尝试打开设备并完成初始化, 确定有效设备类型。
     ///
-    /// **不做 find**: 候选顺序 (去重后) = 配置类型 → [`VCI_USBCAN_2E_U`] →
-    /// [`VCI_USBCAN2`]。第一个完整打开成功的候选即写入 `self.device_type` 并
+    /// **不做 find**: 候选顺序 (去重后) = 配置类型 → [`VCI_USBCAN2`] →
+    /// [`VCI_USBCAN_2E_U`]。第一个完整打开成功的候选即写入 `self.device_type` 并
     /// 返回; 全部失败返回 [`CanError::NotFound`]。
     ///
     /// 不再调用 `VCI_FindUsbDevice2` 的原因: find 会在本进程占用设备接口 0 且
@@ -715,7 +732,9 @@ impl UsbVciBackend {
 
     /// 生成安全探测的候选设备类型列表 (已去重, 保持首次出现顺序)。
     ///
-    /// 顺序: 配置类型 (0 视为"未指定/自动", 跳过) → 2E_U → USBCAN2。
+    /// 顺序: 配置类型 (0 视为"未指定/自动", 跳过) → USBCAN2 → 2E_U。
+    /// 官方样例全部用 [`VCI_USBCAN2`] (4) 打开设备 (含 hw_type="CAN-Linux" 的
+    /// 2E_U), 故默认 4 先于 2E_U (21); 显式指定 2E_U 时配置类型仍最先尝试。
     /// 同一类型只出现一次, 避免对脆弱固件重复尝试。
     ///
     /// @return 去重后的候选类型列表。
@@ -725,8 +744,8 @@ impl UsbVciBackend {
         if self.device_type != 0 {
             candidates.push(self.device_type);
         }
-        candidates.push(VCI_USBCAN_2E_U);
         candidates.push(VCI_USBCAN2);
+        candidates.push(VCI_USBCAN_2E_U);
         let mut seen = std::collections::HashSet::new();
         candidates.retain(|&t| seen.insert(t));
         candidates
@@ -762,7 +781,7 @@ impl CanBackend for UsbVciBackend {
     /// 按配置打开 USBCAN 后端。
     ///
     /// **不做 find** (见 [`Self::probe_and_open`]: find 的 usbfs 接口 claim 与
-    /// OpenDevice 的 SET_CONFIGURATION 同进程自冲突): 按 [配置类型, 2E_U, USBCAN2]
+    /// OpenDevice 的 SET_CONFIGURATION 同进程自冲突): 按 [配置类型, USBCAN2, 2E_U]
     /// 去重后的顺序依次尝试 `VCI_OpenDevice` —— 第一个完整打开成功的类型即有效
     /// 设备类型, 后续 init/start/transmit/receive/close 全部使用它。失败的探测
     /// 类型不做 close (防止脆弱固件二次崩溃), 绝不 panic。
@@ -796,7 +815,7 @@ impl CanBackend for UsbVciBackend {
                 RECONNECT_DELAY,
                 RECONNECT_ATTEMPTS,
             );
-            // 安全探测 (无 find): 配置类型 → 2E_U → USBCAN2, 首成功即有效类型。
+            // 安全探测 (无 find): 配置类型 → USBCAN2 → 2E_U, 首成功即有效类型。
             backend.probe_and_open()?;
             Ok(backend)
         }
@@ -954,6 +973,9 @@ fn vci_obj_to_frame(obj: &VCI_CAN_OBJ) -> Result<CanFrame> {
 
 /// 将协议无关帧转换为驱动帧。
 ///
+/// 发送帧 `SendType` 固定为 [`SEND_TYPE_SINGLE`] (1, 单次发送) —— 官方二次开发
+/// 建议 (接口函数库说明书 2.1.3), 避免失败帧占用 4 秒自动重发窗口。
+///
 /// @param frame 待发送的 [`CanFrame`]。
 /// @return 填充好的 `VCI_CAN_OBJ`; CANFD 帧返回 [`CanError::Unsupported`]。
 fn frame_to_vci_obj(frame: &CanFrame) -> Result<VCI_CAN_OBJ> {
@@ -961,6 +983,7 @@ fn frame_to_vci_obj(frame: &CanFrame) -> Result<VCI_CAN_OBJ> {
         return Err(CanError::Unsupported("CANFD 帧: USBCAN 硬件仅支持经典 CAN"));
     }
     let mut obj = EMPTY_CAN_OBJ;
+    obj.SendType = SEND_TYPE_SINGLE;
     obj.ID = frame.id().raw_id();
     obj.ExternFlag = u8::from(frame.id().is_extended());
     obj.RemoteFlag = u8::from(frame.is_remote());
@@ -1297,7 +1320,8 @@ mod conversion_tests {
         assert_eq!(f.len(), 8);
     }
 
-    /// 标准帧 → 驱动帧: ID/ExternFlag/DataLen/Data 逐字段正确。
+    /// 标准帧 → 驱动帧: ID/ExternFlag/DataLen/Data 逐字段正确, 且 SendType 为
+    /// 官方建议的单次发送 (1)。
     #[test]
     fn frame_to_vci_obj_standard() {
         let f = CanFrame::new(CanId::new_standard(0x456).unwrap(), vec![9, 8, 7]).unwrap();
@@ -1305,6 +1329,7 @@ mod conversion_tests {
         assert_eq!(obj.ID, 0x456);
         assert_eq!(obj.ExternFlag, 0);
         assert_eq!(obj.RemoteFlag, 0);
+        assert_eq!(obj.SendType, SEND_TYPE_SINGLE);
         assert_eq!(obj.DataLen, 3);
         assert_eq!(&obj.Data[..3], &[9, 8, 7]);
     }
@@ -1335,8 +1360,9 @@ mod conversion_tests {
     /// hw_type → 设备类型映射全分支 (与 `map_hw_type_to_device_type` 规则表一致)。
     #[test]
     fn map_hw_type_to_device_type_full_table() {
-        // 实测确认: USBCAN-2E_U 在 Linux 驱动下上报的 hw_type 即 "CAN-Linux" → 21。
-        assert_eq!(map_hw_type_to_device_type("CAN-Linux"), VCI_USBCAN_2E_U);
+        // 官方样例全部用 4 打开 hw_type="CAN-Linux" 设备 (厂商文档 C3) → 映射 4,
+        // 不再特判 21。
+        assert_eq!(map_hw_type_to_device_type("CAN-Linux"), VCI_USBCAN2);
         // 含 "2E_U" → 21 (含 E_U 的 2E_U 型号必须先被此分支接住)。
         assert_eq!(map_hw_type_to_device_type("USBCAN_2E_U"), VCI_USBCAN_2E_U);
         assert_eq!(map_hw_type_to_device_type("USBCAN-2E_U"), VCI_USBCAN_2E_U);
@@ -1566,7 +1592,7 @@ mod mock_tests {
         (backend, device)
     }
 
-    /// 探测顺序 (无 find): 配置类型 21 一次成功 → 默认候选 21/4 不再尝试
+    /// 探测顺序 (无 find): 配置类型 21 一次成功 → 默认候选 4/21 不再尝试
     /// (配置 21 与默认 2E_U 去重后只出现一次), 失败候选不 close。
     #[test]
     fn probe_config_type_first_succeeds_immediately() {
@@ -1574,7 +1600,7 @@ mod mock_tests {
         backend.probe_and_open().expect("探测应成功");
         {
             let device = device.lock().unwrap();
-            // 候选 [21(配置), 21(2E_U 去重跳过), 4] → 配置类型 21 一次成功。
+            // 候选 [21(配置), 4, 21(2E_U 去重跳过)] → 配置类型 21 一次成功。
             assert_eq!(device.open_history, vec![21]);
             // 无失败候选 → close 历史必须为空。
             assert!(device.close_history.is_empty());
@@ -1582,34 +1608,34 @@ mod mock_tests {
         assert_eq!(backend.device_type, 21);
     }
 
-    /// 探测顺序 (无 find): 配置类型 4 先于默认 2E_U (21) 被尝试。
+    /// 探测顺序 (无 find): 配置类型 4 先于默认候选被尝试 (4 与默认 USBCAN2 去重)。
     #[test]
     fn probe_config_type_prioritized_over_defaults() {
         let (mut backend, device) = make_probe_backend(VCI_USBCAN2);
         backend.probe_and_open().expect("探测应成功");
         {
             let device = device.lock().unwrap();
-            // 候选 [4(配置), 21, 4(去重跳过)] → 配置类型 4 先试, 一次成功。
+            // 候选 [4(配置), 4(USBCAN2 去重跳过), 21] → 配置类型 4 先试, 一次成功。
             assert_eq!(device.open_history, vec![4]);
         }
         assert_eq!(backend.device_type, 4);
     }
 
-    /// 探测顺序 (无 find): 未指定类型 (0) 时跳过该候选, 默认 21 先于 4;
-    /// 失败候选 (21) 不做 close。
+    /// 探测顺序 (无 find): 未指定类型 (0) 时跳过该候选, 默认 USBCAN2 (4) 先于
+    /// 2E_U (21) (官方样例全部用 4 打开); 失败候选 (4) 不做 close。
     #[test]
-    fn probe_without_find_tries_2e_u_before_usbcan2() {
+    fn probe_without_find_tries_usbcan2_before_2e_u() {
         let (mut backend, device) = make_probe_backend(0); // 配置类型未指定
-        device.lock().unwrap().fail_open_for = Some(VCI_USBCAN_2E_U); // 21 打开失败
-        backend.probe_and_open().expect("探测应回退到 4");
+        device.lock().unwrap().fail_open_for = Some(VCI_USBCAN2); // 4 打开失败
+        backend.probe_and_open().expect("探测应回退到 21");
         {
             let device = device.lock().unwrap();
-            // 0 被跳过; 候选 [21, 4] 依次尝试, 21 先于 4。
-            assert_eq!(device.open_history, vec![21, 4]);
-            // 失败的候选 (21) 不应被 close (防脆弱固件二次崩溃)。
+            // 0 被跳过; 候选 [4, 21] 依次尝试, 4 先于 21。
+            assert_eq!(device.open_history, vec![VCI_USBCAN2, VCI_USBCAN_2E_U]);
+            // 失败的候选 (4) 不应被 close (防脆弱固件二次崩溃)。
             assert!(device.close_history.is_empty());
         }
-        assert_eq!(backend.device_type, VCI_USBCAN2);
+        assert_eq!(backend.device_type, VCI_USBCAN_2E_U);
     }
 
     /// 探测去重: 配置类型 21 失败 → 回退候选 21 (2E_U) 去重跳过, 直接落到 4;
@@ -1621,7 +1647,7 @@ mod mock_tests {
         backend.probe_and_open().expect("探测应回退成功");
         {
             let device = device.lock().unwrap();
-            // 候选 [21(配置), 21(2E_U, 去重跳过), 4] → 只尝试 21 一次, 再落到 4。
+            // 候选 [21(配置), 4, 21(2E_U, 去重跳过)] → 只尝试 21 一次, 再落到 4。
             assert_eq!(device.open_history, vec![21, 4]);
             // 失败的 21 不应被 close (防脆弱固件二次崩溃)。
             assert!(device.close_history.is_empty());
@@ -1638,6 +1664,7 @@ mod mock_tests {
         assert_eq!(err, CanError::NotFound);
         {
             let device = device.lock().unwrap();
+            // 候选 [21(配置), 4, 21(2E_U 去重跳过)] → 全部失败。
             assert_eq!(device.open_history, vec![21, 4]);
             assert!(device.close_history.is_empty(), "失败候选不得 close");
         }
@@ -1671,6 +1698,24 @@ mod discoverer_tests {
         assert_eq!(devices[1].id, "1");
         assert_eq!(devices[1].details.model, "USBCAN-E-U");
         assert_eq!(devices[1].device_type, crate::ffi::VCI_USBCAN2);
+    }
+
+    /// discoverer/list 路径同步: hw_type "CAN-Linux" (Linux 驱动下 2E_U 设备上报)
+    /// 映射到默认设备类型 4 (官方样例全用 4 打开), 而非 21。
+    #[test]
+    fn discoverer_maps_can_linux_to_usbcan2() {
+        let device = Arc::new(Mutex::new(MockDevice::new()));
+        {
+            let mut device = device.lock().unwrap();
+            device.board_infos = vec![mock_board_info("CAN-Linux")];
+        }
+        let ops = MockVciOps {
+            state: device.clone(),
+        };
+        let devices = list_devices_with(&ops);
+        assert_eq!(devices.len(), 1);
+        assert_eq!(devices[0].details.model, "CAN-Linux");
+        assert_eq!(devices[0].device_type, crate::ffi::VCI_USBCAN2);
     }
 
     /// 枚举对容量不足的输出缓冲区截断到缓冲容量, 不 panic。
