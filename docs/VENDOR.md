@@ -14,11 +14,21 @@
 
 ```
 third_party/controlcan/
-  aarch64/    libcontrolcan.{a,so}   (ARM 平台/64bit linux)
-  x86_64/     libcontrolcan.{a,so}   (x86 平台/64bit linux)
+  aarch64/    libcontrolcan.{a,so}   (ARM 平台/64bit linux, SDK V1.45)
+  x86_64/     libcontrolcan.so       (x86 平台/64bit linux, libusbcan_v351, 固件 3.51 专用)
   win64/      ControlCAN.dll         (Windows x64, PE32+)
   controlcan.h                       (架构无关头文件)
 ```
+
+> **x86_64 驱动替换 (v0.1.4)**: `third_party/controlcan/x86_64/libcontrolcan.so` 已由 Linux 资料包 V1.45 原版替换为 **libusbcan_v351** (固件 **3.51** 专用驱动)。详见下方「x86_64 驱动替换」一节。
+
+### x86_64 驱动替换: libusbcan_v351 (固件 3.51 专用)
+
+- **背景**: CAN-Linux 设备 (固件 3.51) 用 SDK V1.45 的 `libcontrolcan.so` 无法打开 (`Device or resource busy`);用户提供的 `libusbcan_v351` 配合设备类型 4 (VCI_USBCAN2) + 标准序列号**完全打通** — 真机实测 OpenDevice/InitCAN/StartCAN/Transmit (0x181, SendType=1) 全部返回 1, 二进制 `--backend usbvci` 无后端错误
+- **来源路径**: `/media/raw/filespace/test/can_service/usbcan_driver/lib/` (用户提供的 v351 驱动目录, 固件 3.51 专用)
+- **md5**: `2ec9b05066ba44b67cfec7d535f99763` (已替换入库的 `third_party/controlcan/x86_64/libcontrolcan.so`)
+- **动态依赖**: `readelf -d` 确认 NEEDED `libusb-1.0.so.0` + `libc.so.6`, glibc 需求 ≤ **2.14** → **目标系统需安装 `libusb-1.0`** (宿主已装; Ubuntu: `apt install libusb-1.0-0`)
+- **aarch64 保持 SDK V1.45**: 用户未提供 v351 的 arm64 版 (来源目录只有 x86_64 库), 故 `third_party/controlcan/aarch64/` 保持 Linux 资料包 V1.45 原版库 (md5 `59a2d704ccf3756fd11a4871b92ade5c`)。若后续获得 v351 arm64 版再对称替换
 
 - Windows `ControlCAN.dll` 来源: SDK `二次开发库文件/x64(64bit)/ControlCAN.dll` (sha256 `6d151f92217983c39a6690ded76b41f86ebad7570bcc27fc9d13f7141425b1e3`), 随源码提交并打入 Tauri 发行包资源 (落位 `$RESOURCE/ControlCAN.dll` == exe 所在目录 → 运行时 exe-dir-first 加载命中, 开箱即用)
 - **Windows `usbcan64.dll`**: 不在 SDK 归档内 — `硬件驱动程序(手动安装).rar` 只含驱动安装文件 (`*.inf` / `*.sys` / WinUSB·WDF 联合安装器), `usbcan64.dll` 由驱动安装器写入 `System32`。**无需随发行包携带**: 用户安装厂商驱动后自动就绪 (ControlCAN.dll 调用链不需要用户手动放置该 DLL)
