@@ -1,0 +1,52 @@
+# Docker workflow: 构建镜像并发布到 GitHub Container Registry (ghcr.io)
+#
+# 触发: tag v* (发行) / push main / workflow_dispatch (手动)
+# 与 ci.yml / release.yml 互不干扰 (不同文件, 各自独立触发)。
+# GITHUB_TOKEN 对 ghcr.io 自动具备 packages 写权限 (公开仓库无需额外配置)。
+#
+# 标签策略:
+#   - 任何触发:      ghcr.io/shengjian20/can-monitor:latest
+#   - 仅 tag 触发:   ghcr.io/shengjian20/can-monitor:<tag> (如 v0.1.0)
+
+name: Docker
+
+on:
+  push:
+    tags:
+      - 'v*'
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  build-and-push:
+    name: build & push ghcr.io
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: |
+            ghcr.io/shengjian20/can-monitor:latest
+            ${{ github.ref_type == 'tag' && format('ghcr.io/shengjian20/can-monitor:{0}', github.ref_name) || '' }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

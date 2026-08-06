@@ -97,6 +97,34 @@ cd src-tauri && cargo tauri dev
 
 Linux 需要系统依赖: `libwebkit2gtk-4.1-dev`、`libayatana-appindicator3-dev`、`librsvg2-dev` (及 `libdbus-1-dev`)。也可用仓库自带 devcontainer (已装好全部工具链)。GUI 前端与 Web 形态共用同一 React 代码 (`web/`),运行时经 Tauri IPC (invoke + Channel) 通信,接口与 Web 形态一一对应。
 
+### 形态四: Docker 容器 (ghcr.io)
+
+镜像发布在 GitHub Container Registry: `ghcr.io/shengjian20/can-monitor`,由 `.github/workflows/docker.yml` 在 tag `v*` / main 推送时自动构建。镜像内含 can-monitor 二进制 (TUI + Web)、Web 前端静态资源,以及 `libcontrolcan.so` (与二进制同目录 + `CAN_USBVCI_LIB` 双保险,USB-CAN **开箱即用**)。
+
+```bash
+# 拉取
+docker pull ghcr.io/shengjian20/can-monitor:latest
+
+# 无设备模式 (推荐先试): TUI 前台 + Web 界面
+docker run --rm -it --network host ghcr.io/shengjian20/can-monitor:latest --backend none
+# 浏览器打开 http://localhost:8080 使用 Web 界面 (TUI 在终端中)
+
+# SocketCAN + 宿主机 vcan0 (宿主机先执行 bash scripts/vcan-setup.sh 建 vcan0)
+docker run --rm -it --network host --cap-add NET_ADMIN \
+  ghcr.io/shengjian20/can-monitor:latest --backend socketcan --iface vcan0
+
+# 后台 Web 服务 (headless; TUI 需要 TTY, 故用 -dt 分配伪终端)
+docker run --rm -dt --network host ghcr.io/shengjian20/can-monitor:latest --backend none
+```
+
+> **为什么用 `--network host` 而不是 `-p` 端口映射?** Web 服务受安全锁定仅绑定本机回环 (`127.0.0.1`,拒绝 `0.0.0.0`,Metis),且 Web 前端固定调用 `:8080` — 端口映射无法从容器外穿透到容器内的回环地址。`--network host` 让容器共享宿主机网络,Web 直接落在宿主机回环 `8080`,浏览器访问 `http://localhost:8080` 即开即用。默认 CMD 以 `--web-port 127.0.0.1:8088` 启动 (对应 `EXPOSE 8088`),仅在容器内访问时使用该端口。
+>
+> **需要 TTY**: 程序以 TUI 为主 (`can-monitor` 总会拉起终端界面,即便同时起了 Web),无 TTY 时 ratatui 初始化失败退出。交互运行用 `-it`,后台运行用 `-dt` 分配伪终端。
+>
+> **USB-CAN 设备透传**: `--backend usbvci` 需透传 USB 设备,例如 `--device /dev/bus/usb/001/002` 或 `--privileged` (容器内需对 `/dev/bus/usb/*/*` 有读写权限,见上节)。
+
+本地构建镜像 (多阶段: node 构建前端 → rust 构建二进制 → debian:bookworm-slim 运行镜像): `docker build -t can-monitor:dev .`
+
 ## 设备支持
 
 | 后端 | 平台 | 接口/设备 | 自动发现 | CANFD | 备注 |

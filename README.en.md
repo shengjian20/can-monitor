@@ -97,6 +97,34 @@ cd src-tauri && cargo tauri dev
 
 On Linux this needs system packages: `libwebkit2gtk-4.1-dev`, `libayatana-appindicator3-dev`, `librsvg2-dev` (and `libdbus-1-dev`). The bundled devcontainer already has the full toolchain. The GUI shares the same React code as the Web form (`web/`) and talks to Rust over Tauri IPC (invoke + Channel), with commands mirroring the Web API one to one.
 
+### Form 4: Docker (ghcr.io)
+
+Images are published to the GitHub Container Registry at `ghcr.io/shengjian20/can-monitor`, built automatically by `.github/workflows/docker.yml` on `v*` tags and `main` pushes. The image bundles the `can-monitor` binary (TUI + Web), the Web frontend assets, and `libcontrolcan.so` (placed next to the binary plus a `CAN_USBVCI_LIB` env fallback — USB-CAN works **out of the box**).
+
+```bash
+# Pull
+docker pull ghcr.io/shengjian20/can-monitor:latest
+
+# No-device mode (try this first): TUI in the terminal + Web UI
+docker run --rm -it --network host ghcr.io/shengjian20/can-monitor:latest --backend none
+# open http://localhost:8080 in your browser for the Web UI (TUI runs in the terminal)
+
+# SocketCAN + host vcan0 (create vcan0 on the host first: bash scripts/vcan-setup.sh)
+docker run --rm -it --network host --cap-add NET_ADMIN \
+  ghcr.io/shengjian20/can-monitor:latest --backend socketcan --iface vcan0
+
+# Headless Web server (the TUI needs a TTY, so use -dt to allocate a pseudo-terminal)
+docker run --rm -dt --network host ghcr.io/shengjian20/can-monitor:latest --backend none
+```
+
+> **Why `--network host` instead of `-p` port mapping?** The Web server is security-locked to bind loopback only (`127.0.0.1`, `0.0.0.0` is rejected — "Metis" lock), and the Web frontend hardcodes `:8080` — so a `-p` mapping cannot reach the loopback address from outside the container. With `--network host` the container shares the host network, the Web server lands directly on the host loopback `8080`, and `http://localhost:8080` just works. The default CMD starts with `--web-port 127.0.0.1:8088` (matching `EXPOSE 8088`); that port is only reachable from inside the container.
+>
+> **A TTY is required**: the app is TUI-first (`can-monitor` always brings up the terminal UI even when the Web server is also running); without a TTY, ratatui's terminal init fails and the process exits. Use `-it` for interactive runs and `-dt` for detached runs.
+>
+> **USB-CAN passthrough**: for `--backend usbvci` pass the USB device through, e.g. `--device /dev/bus/usb/001/002` or `--privileged` (the container needs read/write access to `/dev/bus/usb/*/*`, see above).
+
+Build the image locally (multi-stage: node builds the frontend → rust builds the binary → `debian:bookworm-slim` runtime): `docker build -t can-monitor:dev .`
+
 ## Device support
 
 | Backend | Platform | Interface / device | Auto-discovery | CANFD | Notes |

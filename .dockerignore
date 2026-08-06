@@ -1,0 +1,25 @@
+# ---- 构建上下文最小化 (docker build 以仓库根为上下文) ----
+# 必须排除: 构建产物 / git 元数据 / 内部工作区 / 供应商 SDK 源目录 / node_modules
+
+# Rust 构建产物 (容器内全新编译, 不携带本地 target)
+target/
+
+# 版本控制与内部工作区 (公开仓库不含 .omo)
+.git/
+.omo/
+
+# 供应商 SDK 源码目录 (所需库已收编到 third_party/controlcan/, 本目录不入镜像)
+CAN分析仪资料20250624_Linux/
+
+# 前端: node_modules 不入上下文; dist 由 node 阶段现场构建 (避免陈旧产物)
+web/node_modules/
+web/dist/
+web/e2e/
+
+# Tauri GUI 工程与文档 (镜像只含 can-monitor 二进制, 均不需要)
+src-tauri/
+docs/
+
+# 杂项
+*.log
+.DS_Store
